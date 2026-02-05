@@ -1,0 +1,82 @@
+const { Pool } = require('pg');
+require('dotenv').config();
+
+// Configuración del pool de conexiones a PostgreSQL
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    max: parseInt(process.env.DATABASE_POOL_MAX) || 10,
+    min: parseInt(process.env.DATABASE_POOL_MIN) || 2,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 2000,
+});
+
+// Evento cuando se crea una nueva conexión
+pool.on('connect', () => {
+    console.log('✓ Nueva conexión establecida con PostgreSQL');
+});
+
+// Evento cuando hay un error en el pool
+pool.on('error', (err) => {
+    console.error('✗ Error inesperado en el pool de PostgreSQL:', err);
+    process.exit(-1);
+});
+
+// Función helper para ejecutar queries con manejo de errores
+const query = async (text, params) => {
+    const start = Date.now();
+    try {
+        const res = await pool.query(text, params);
+        const duration = Date.now() - start;
+        console.log('Query ejecutada:', { text, duration, rows: res.rowCount });
+        return res;
+    } catch (error) {
+        console.error('Error en query:', { text, error: error.message });
+        throw error;
+    }
+};
+
+// Función para obtener un cliente del pool (para transacciones)
+const getClient = async () => {
+    const client = await pool.connect();
+    const originalQuery = client.query.bind(client);
+    const originalRelease = client.release.bind(client);
+
+    // Agregar timeout para evitar que se quede bloqueado
+    const timeout = setTimeout(() => {
+        console.error('⚠ Cliente no fue liberado después de 5 segundos');
+    }, 5000);
+
+    // Sobrescribir query para logging
+    client.query = (...args) => {
+        return originalQuery(...args);
+    };
+
+    // Sobrescribir release para limpiar timeout
+    client.release = () => {
+        clearTimeout(timeout);
+        client.query = originalQuery;
+        client.release = originalRelease;
+        return originalRelease();
+    };
+
+    return client;
+};
+
+// Función para verificar la conexión
+const testConnection = async () => {
+    try {
+        const res = await pool.query('SELECT NOW()');
+        console.log('✓ Conexión a PostgreSQL exitosa:', res.rows[0].now);
+        return true;
+    } catch (error) {
+        console.error('✗ Error conectando a PostgreSQL:', error.message);
+        return false;
+    }
+};
+
+module.exports = {
+    pool,
+    query,
+    getClient,
+    testConnection
+};

@@ -1,0 +1,453 @@
+/**
+ * Keno Service - Backend Logic (MVP)
+ *
+ * Sistema de sesiones con liquidacion batch:
+ * - Balance visible = balance contrato + resultado neto sesion
+ * - Juegos procesados instantaneamente en backend
+ * - Liquidacion con contrato al cerrar sesion
+ *
+ * MVP Config:
+ * - Apuesta fija: 1 USDT
+ * - Fee: 12% (1200 bps) sobre perdidas
+ * - Pool: 88% (8800 bps) a reserva
+ * - Max Payout: DINAMICO (10% del pool)
+ *
+ * Sistema de Cap Dinamico:
+ * - Pool $500 → Max Payout $50
+ * - Pool $750 → Max Payout $75
+ * - Pool $3,000 → Max Payout $300
+ * - Pool $100,000 → Max Payout $10,000 (maximo teorico)
+ */
+
+const pool = require('../db');
+const crypto = require('crypto');
+const kenoSessionService = require('./kenoSessionService');
+const gameConfigService = require('./gameConfigService');
+const kenoVrfService = require('./kenoVrfService');
+
+// Configuracion estatica de Keno (valores dinamicos vienen de gameConfigService)
+const KENO_CONFIG = {
+  TOTAL_NUMBERS: 80,      // Numeros del 1 al 80
+  DRAWN_NUMBERS: 20,      // Se sortean 20 numeros
+  MIN_SPOTS: 1,           // Minimo 1 numero
+  MAX_SPOTS: 10,          // Maximo 10 numeros
+  // MVP: Valores fijos (la BD es fuente de verdad, estos son fallback)
+  BET_AMOUNT: 1,          // Apuesta fija 1 USDT
+  MAX_PAYOUT: 50,         // Cap de pago maximo
+  FEE_BPS: 1200,          // 12% fee
+  POOL_BPS: 8800          // 88% pool/reserva
+};
+
+// Tabla de pagos (spots -> hits -> multiplicador)
+const PAYOUT_TABLE = {
+  1: { 0: 0, 1: 3 },
+  2: { 0: 0, 1: 1, 2: 9 },
+  3: { 0: 0, 1: 0, 2: 2, 3: 27 },
+  4: { 0: 0, 1: 0, 2: 1, 3: 5, 4: 75 },
+  5: { 0: 0, 1: 0, 2: 0, 3: 3, 4: 12, 5: 300 },
+  6: { 0: 0, 1: 0, 2: 0, 3: 2, 4: 5, 5: 50, 6: 1000 },
+  7: { 0: 0, 1: 0, 2: 0, 3: 1, 4: 3, 5: 20, 6: 100, 7: 2000 },
+  8: { 0: 0, 1: 0, 2: 0, 3: 0, 4: 2, 5: 10, 6: 50, 7: 500, 8: 5000 },
+  9: { 0: 0, 1: 0, 2: 0, 3: 0, 4: 1, 5: 5, 6: 25, 7: 200, 8: 2000, 9: 7500 },
+  10: { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 3, 6: 15, 7: 100, 8: 1000, 9: 5000, 10: 10000 }
+};
+
+// NOTA: Keno usa balance de base de datos (users.balance)
+// No interactúa con el smart contract directamente
+
+/**
+ * Generar numeros aleatorios verificables
+ * Usa crypto para generar numeros seguros
+ */
+function generateRandomNumbers(count, max, seed) {
+  const numbers = new Set();
+  let counter = 0;
+
+  while (numbers.size < count) {
+    // Crear hash determinista basado en seed y counter
+    const hash = crypto.createHash('sha256')
+      .update(`${seed}-${counter}`)
+      .digest('hex');
+
+    // Convertir primeros 8 chars del hash a numero
+    const num = (parseInt(hash.substring(0, 8), 16) % max) + 1;
+    numbers.add(num);
+    counter++;
+  }
+
+  return Array.from(numbers).sort((a, b) => a - b);
+}
+
+/**
+ * Obtener balance del usuario desde la base de datos
+ * (sincronizado con el contrato via BalanceContext)
+ */
+async function getUserBalance(walletAddress) {
+  try {
+    const result = await pool.query(
+      'SELECT balance FROM users WHERE wallet_address = $1',
+      [walletAddress.toLowerCase()]
+    );
+    if (result.rows.length > 0) {
+      return parseFloat(result.rows[0].balance) || 0;
+    }
+    return 0;
+  } catch (err) {
+    console.error('[KenoService] Error getting user balance:', err);
+    return 0;
+  }
+}
+
+/**
+ * Obtener balance efectivo del usuario
+ * Balance efectivo = balance contrato + resultado neto de sesión activa
+ */
+async function getTotalBalance(walletAddress) {
+  const effectiveBalance = await kenoSessionService.getEffectiveBalance(walletAddress);
+  return {
+    contractBalance: effectiveBalance.contractBalance,
+    sessionNetResult: effectiveBalance.sessionNetResult,
+    totalBalance: effectiveBalance.effectiveBalance
+  };
+}
+
+/**
+ * Jugar Keno (con sistema de sesiones) - MVP
+ *
+ * CAMBIOS MVP:
+ * - Apuesta fija $1 USDT (ignora betAmount del request)
+ * - Cap de pago maximo $50 USDT
+ * - Fee 12% solo sobre perdidas
+ * - Validacion de solvencia del contrato
+ */
+async function playKeno(walletAddress, selectedNumbers, betAmount) {
+  const wallet = walletAddress.toLowerCase();
+
+  // Obtener configuracion dinamica desde BD
+  const config = await gameConfigService.getKenoConfig();
+  const systemConfig = await gameConfigService.getSystemConfig();
+
+  // MVP: Apuesta fija (ignora el betAmount del request)
+  const bet = config.betAmount; // Siempre 1 USDT
+
+  // Validaciones de numeros
+  if (!Array.isArray(selectedNumbers) || selectedNumbers.length < config.minSpots) {
+    throw new Error(`Selecciona al menos ${config.minSpots} numero`);
+  }
+
+  if (selectedNumbers.length > config.maxSpots) {
+    throw new Error(`Maximo ${config.maxSpots} numeros`);
+  }
+
+  // Validar que los numeros esten en rango
+  for (const num of selectedNumbers) {
+    if (num < 1 || num > config.totalNumbers) {
+      throw new Error(`Numero ${num} fuera de rango (1-${config.totalNumbers})`);
+    }
+  }
+
+  // Validar numeros unicos
+  if (new Set(selectedNumbers).size !== selectedNumbers.length) {
+    throw new Error('Los numeros deben ser unicos');
+  }
+
+  // Verificar balance efectivo (contrato + sesion)
+  const balances = await getTotalBalance(wallet);
+  if (bet > balances.totalBalance) {
+    throw new Error(`Balance insuficiente. Tienes: $${balances.totalBalance.toFixed(2)} USDT`);
+  }
+
+  // MVP: Validar solvencia del contrato (debe tener al menos maxPayout)
+  if (balances.contractBalance < config.maxPayout) {
+    throw new Error('Sistema temporalmente sin liquidez. Intenta mas tarde.');
+  }
+
+  // Obtener o crear sesion activa
+  const session = await kenoSessionService.getOrCreateSession(wallet);
+
+  // Generar seeds para Provably Fair + VRF
+  const timestamp = Date.now();
+  const serverSeed = kenoVrfService.generateServerSeed();
+  const clientSeed = ''; // Puede ser proporcionado por el usuario en futuro
+  const nonce = await kenoVrfService.getNextNonce(wallet);
+
+  // Generar seed combinado verificable
+  const seed = kenoVrfService.generateCombinedSeed(serverSeed, clientSeed, nonce);
+
+  // Generar 20 numeros aleatorios
+  const drawnNumbers = generateRandomNumbers(
+    config.drawnNumbers,
+    config.totalNumbers,
+    seed
+  );
+
+  // Calcular aciertos
+  const matchedNumbers = selectedNumbers.filter(n => drawnNumbers.includes(n));
+  const hits = matchedNumbers.length;
+  const spots = selectedNumbers.length;
+
+  // Obtener multiplicador de la tabla
+  const rawMultiplier = PAYOUT_TABLE[spots]?.[hits] || 0;
+
+  // MVP: Calcular payout con cap aplicado
+  const { theoreticalPayout, actualPayout, capped } = gameConfigService.calculateCappedPayout(
+    bet,
+    rawMultiplier,
+    config.maxPayout
+  );
+
+  const payout = actualPayout;
+  const netResult = payout - bet;
+
+  // Registrar en base de datos
+  const gameId = `KENO-${timestamp}-${wallet.substring(2, 8)}`;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Insertar juego (vinculado a la sesion) con seeds para VRF
+    await client.query(
+      `INSERT INTO keno_games (
+        game_id, wallet_address, selected_numbers, drawn_numbers, matched_numbers,
+        spots, hits, bet_amount, multiplier, payout, net_result,
+        seed, timestamp, settled, session_id,
+        server_seed, client_seed, nonce, vrf_verified
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, false, $14, $15, $16, $17, false)`,
+      [
+        gameId, wallet,
+        JSON.stringify(selectedNumbers),
+        JSON.stringify(drawnNumbers),
+        JSON.stringify(matchedNumbers),
+        spots, hits, bet, rawMultiplier, payout, netResult,
+        seed, new Date(timestamp), session.id,
+        serverSeed, clientSeed, nonce
+      ]
+    );
+
+    // Actualizar sesion con los totales
+    await client.query(
+      `UPDATE keno_sessions
+       SET total_wagered = total_wagered + $1,
+           total_won = total_won + $2,
+           games_played = games_played + 1,
+           updated_at = NOW()
+       WHERE id = $3`,
+      [bet, payout, session.id]
+    );
+
+    // MVP: Actualizar pool y registrar fees
+    let poolDelta = 0;
+    let feeAmount = 0;
+    let reserveAmount = 0;
+
+    if (netResult < 0) {
+      // Jugador perdio: la perdida va al pool (88%) y fee (12%)
+      const loss = Math.abs(netResult);
+      const { fee, reserve } = gameConfigService.calculateLossDistribution(
+        loss,
+        config.feeBps,
+        config.poolBps
+      );
+
+      feeAmount = fee;
+      reserveAmount = reserve;
+      poolDelta = reserve; // Solo la reserva va al pool
+
+      await client.query(
+        `INSERT INTO keno_fees (game_id, fee_amount, reserve_amount, created_at)
+         VALUES ($1, $2, $3, NOW())`,
+        [gameId, fee, reserve]
+      );
+    } else if (netResult > 0) {
+      // Jugador gano: el payout sale del pool
+      poolDelta = -payout;
+    }
+
+    // Actualizar pool balance y estadisticas
+    await client.query(
+      `UPDATE keno_pool
+       SET balance = balance + $1,
+           total_bets = total_bets + $2,
+           total_payouts = total_payouts + $3,
+           total_fees = total_fees + $4,
+           games_played = games_played + 1,
+           updated_at = NOW()
+       WHERE id = 1`,
+      [poolDelta, bet, payout, feeAmount]
+    );
+
+    // Invalidar cache del pool para reflejar nuevo balance
+    gameConfigService.invalidatePoolBalanceCache();
+
+    await client.query('COMMIT');
+
+    console.log(`[KenoService] Game ${gameId}: ${spots} spots, ${hits} hits, bet $${bet}, payout $${payout}${capped ? ' (CAPPED)' : ''}`);
+
+    return {
+      gameId,
+      selectedNumbers: selectedNumbers.sort((a, b) => a - b),
+      drawnNumbers,
+      matchedNumbers,
+      spots,
+      hits,
+      betAmount: bet,
+      multiplier: rawMultiplier,
+      theoreticalPayout,
+      payout,
+      capped,
+      maxPayout: config.maxPayout,
+      netResult,
+      isWin: payout > 0,
+      seed,
+      timestamp,
+      // VRF data for Provably Fair verification
+      provablyFair: {
+        serverSeed,
+        clientSeed,
+        nonce,
+        combinedSeed: seed,
+        vrfVerified: false
+      }
+    };
+
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Obtener historial de juegos de un usuario
+ */
+async function getGameHistory(walletAddress, limit = 20) {
+  const result = await pool.query(
+    `SELECT game_id, selected_numbers, drawn_numbers, matched_numbers,
+            spots, hits, bet_amount, multiplier, payout, net_result,
+            timestamp, settled
+     FROM keno_games
+     WHERE wallet_address = $1
+     ORDER BY timestamp DESC
+     LIMIT $2`,
+    [walletAddress.toLowerCase(), limit]
+  );
+
+  return result.rows.map(row => ({
+    gameId: row.game_id,
+    selectedNumbers: row.selected_numbers,
+    drawnNumbers: row.drawn_numbers,
+    matchedNumbers: row.matched_numbers,
+    spots: row.spots,
+    hits: row.hits,
+    betAmount: parseFloat(row.bet_amount),
+    multiplier: parseFloat(row.multiplier),
+    payout: parseFloat(row.payout),
+    netResult: parseFloat(row.net_result),
+    isWin: parseFloat(row.payout) > 0,
+    timestamp: row.timestamp,
+    settled: row.settled
+  }));
+}
+
+/**
+ * Obtener estadisticas de Keno para admin
+ */
+async function getKenoStats(dateFrom = null, dateTo = null) {
+  let whereClause = '';
+  const params = [];
+
+  if (dateFrom) {
+    params.push(dateFrom);
+    whereClause += `WHERE timestamp >= $${params.length}`;
+  }
+
+  if (dateTo) {
+    params.push(dateTo);
+    whereClause += whereClause ? ` AND timestamp <= $${params.length}` : `WHERE timestamp <= $${params.length}`;
+  }
+
+  const result = await pool.query(
+    `SELECT
+       COUNT(*) as total_games,
+       COUNT(DISTINCT wallet_address) as unique_players,
+       SUM(bet_amount) as total_wagered,
+       SUM(payout) as total_payouts,
+       SUM(CASE WHEN payout > 0 THEN 1 ELSE 0 END) as total_wins,
+       SUM(CASE WHEN payout = 0 THEN 1 ELSE 0 END) as total_losses
+     FROM keno_games ${whereClause}`,
+    params
+  );
+
+  const feesResult = await pool.query(
+    `SELECT
+       COALESCE(SUM(fee_amount), 0) as total_fees,
+       COALESCE(SUM(reserve_amount), 0) as total_reserve
+     FROM keno_fees kf
+     JOIN keno_games kg ON kf.game_id = kg.game_id
+     ${whereClause}`,
+    params
+  );
+
+  const stats = result.rows[0];
+  const fees = feesResult.rows[0];
+
+  return {
+    totalGames: parseInt(stats.total_games) || 0,
+    uniquePlayers: parseInt(stats.unique_players) || 0,
+    totalWagered: parseFloat(stats.total_wagered) || 0,
+    totalPayouts: parseFloat(stats.total_payouts) || 0,
+    totalWins: parseInt(stats.total_wins) || 0,
+    totalLosses: parseInt(stats.total_losses) || 0,
+    houseEdge: parseFloat(stats.total_wagered) - parseFloat(stats.total_payouts) || 0,
+    totalFees: parseFloat(fees.total_fees) || 0,
+    totalReserve: parseFloat(fees.total_reserve) || 0
+  };
+}
+
+/**
+ * Obtener configuracion (dinamica desde BD)
+ */
+async function getConfig() {
+  const config = await gameConfigService.getKenoConfig();
+
+  return {
+    // Config dinamica de BD
+    betAmount: config.betAmount,
+    maxPayout: config.maxPayout,
+    feeBps: config.feeBps,
+    poolBps: config.poolBps,
+    minSpots: config.minSpots,
+    maxSpots: config.maxSpots,
+    totalNumbers: config.totalNumbers,
+    drawnNumbers: config.drawnNumbers,
+    // Tabla de pagos (estatica)
+    payoutTable: PAYOUT_TABLE,
+    // Info de pool (cap dinamico)
+    pool: {
+      balance: config.poolBalance,
+      maxPayoutRatio: config.maxPayoutRatio,
+      absoluteMaxPayout: config.absoluteMaxPayout,
+      minPoolBalance: config.minPoolBalance
+    },
+    // Info adicional MVP
+    mvp: {
+      fixedBet: true,
+      payoutCapped: true,
+      dynamicCap: true,  // Nuevo: cap basado en pool
+      feeOnLossOnly: true
+    }
+  };
+}
+
+module.exports = {
+  KENO_CONFIG,
+  PAYOUT_TABLE,
+  playKeno,
+  getUserBalance,
+  getTotalBalance,
+  getGameHistory,
+  getKenoStats,
+  getConfig
+};

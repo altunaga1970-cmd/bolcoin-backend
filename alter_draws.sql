@@ -1,0 +1,1 @@
+ALTER TABLE draws ADD COLUMN draw_type VARCHAR(20) DEFAULT 'bolita' CHECK (draw_type IN ('bolita', 'lottery'));
