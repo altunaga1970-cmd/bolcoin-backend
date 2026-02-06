@@ -329,13 +329,15 @@ if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV !== 'producti
                 return res.status(400).json({ success: false, message: 'Address required' });
             }
 
-            // Importar ethers aquí
             const ethers = require('ethers');
-            const LA_BOLITA_ABI = require('../../contracts/artifacts/contracts/LaBolita.sol/LaBolita.json').abi;
+            const { getLaBolitaContract } = require('./chain/provider');
 
-            const provider = new ethers.JsonRpcProvider('http://127.0.0.1:8545');
-            const signer = new ethers.Wallet('0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80', provider);
-            const contract = new ethers.Contract('0xa513E6E4b8f2a923D98304ec87F64353C4D5C853', LA_BOLITA_ABI, signer);
+            let contract;
+            try {
+                contract = getLaBolitaContract();
+            } catch (chainError) {
+                return res.status(503).json({ success: false, message: chainError.message });
+            }
 
             // Probar obtener balance del usuario
             const balance = await contract.userBalances(address);

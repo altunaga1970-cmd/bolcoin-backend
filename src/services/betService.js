@@ -17,29 +17,7 @@ const bankrollService = require('./bankrollService');
 
 // Configuración de ethers para contratos
 const ethers = require('ethers');
-const LA_BOLITA_ABI = require('../../../contracts/artifacts/contracts/LaBolita.sol/LaBolita.json').abi;
-
-// Configuración del contrato (usar variables de entorno)
-const RPC_URL = process.env.RPC_URL || 'http://127.0.0.1:8545';
-const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
-const OPERATOR_PRIVATE_KEY = process.env.OPERATOR_PRIVATE_KEY;
-
-// Para desarrollo local, usar cuenta de Hardhat si no hay OPERATOR_PRIVATE_KEY
-const DEFAULT_PRIVATE_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'; // Account #0
-
-let contract = null;
-let signer = null;
-
-function initContract() {
-    if (!contract) {
-        const provider = new ethers.JsonRpcProvider(RPC_URL);
-        const privateKey = OPERATOR_PRIVATE_KEY || DEFAULT_PRIVATE_KEY;
-        signer = new ethers.Wallet(privateKey, provider);
-        contract = new ethers.Contract(CONTRACT_ADDRESS, LA_BOLITA_ABI, signer);
-        console.log('[BetService] Contract initialized:', CONTRACT_ADDRESS);
-    }
-    return contract;
-}
+const { getLaBolitaContract } = require('../chain/provider');
 
 // =================================
 // SERVICIO DE APUESTAS
@@ -157,7 +135,7 @@ async function autoDepositForUser(walletAddress, amount) {
     try {
         console.log(`[Deposit] Starting auto-deposit for ${walletAddress}, amount: ${amount} USDT`);
 
-        const contractInstance = initContract();
+        const contractInstance = getLaBolitaContract();
         console.log(`[Deposit] Contract instance ready`);
 
         // Verificar balance actual del usuario en el contrato
@@ -344,18 +322,8 @@ async function placeBets(userId, drawId, bets) {
             console.log(`[BetService] Bets to register: ${createdBets.length}`);
             console.log(`[BetService] Total cost: ${totalCost} USDT`);
 
-            // Verificar configuración del contrato
-            if (!CONTRACT_ADDRESS) {
-                throw new Error('CONTRACT_ADDRESS not configured');
-            }
-            if (!RPC_URL) {
-                throw new Error('RPC_URL not configured');
-            }
-
-            console.log(`[BetService] RPC_URL: ${RPC_URL}`);
-            console.log(`[BetService] CONTRACT_ADDRESS: ${CONTRACT_ADDRESS}`);
-
-            const contractInstance = initContract();
+            // getLaBolitaContract() lanza error si falta CONTRACT_ADDRESS o RPC_URL
+            const contractInstance = getLaBolitaContract();
             console.log(`[BetService] Contract instance created successfully`);
 
             // Verificar conexión básica al contrato
