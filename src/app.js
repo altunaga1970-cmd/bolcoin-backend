@@ -74,9 +74,12 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-    res.json({
+    const { dbAvailable } = require('./config/database');
+    const status = dbAvailable ? 'healthy' : 'degraded';
+    res.status(200).json({
         success: true,
-        status: 'healthy',
+        status,
+        database: dbAvailable ? 'connected' : 'unavailable',
         timestamp: new Date().toISOString()
     });
 });

@@ -1,24 +1,30 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
+let dbAvailable = false;
+
 // Configuración del pool de conexiones a PostgreSQL
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     max: parseInt(process.env.DATABASE_POOL_MAX) || 10,
     min: parseInt(process.env.DATABASE_POOL_MIN) || 2,
     idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 2000,
+    connectionTimeoutMillis: 10000,
+    ssl: process.env.NODE_ENV === 'production'
+        ? { rejectUnauthorized: false }
+        : false,
 });
 
 // Evento cuando se crea una nueva conexión
 pool.on('connect', () => {
-    console.log('✓ Nueva conexión establecida con PostgreSQL');
+    dbAvailable = true;
+    console.log('[DB] Conexion establecida con PostgreSQL');
 });
 
 // Evento cuando hay un error en el pool
 pool.on('error', (err) => {
-    console.error('✗ Error inesperado en el pool de PostgreSQL:', err);
-    process.exit(-1);
+    dbAvailable = false;
+    console.error('[DB] Error inesperado en el pool de PostgreSQL:', err);
 });
 
 // Función helper para ejecutar queries con manejo de errores
@@ -46,15 +52,9 @@ const getClient = async () => {
         console.error('⚠ Cliente no fue liberado después de 5 segundos');
     }, 5000);
 
-    // Sobrescribir query para logging
-    client.query = (...args) => {
-        return originalQuery(...args);
-    };
-
     // Sobrescribir release para limpiar timeout
     client.release = () => {
         clearTimeout(timeout);
-        client.query = originalQuery;
         client.release = originalRelease;
         return originalRelease();
     };
@@ -78,5 +78,7 @@ module.exports = {
     pool,
     query,
     getClient,
-    testConnection
+    testConnection,
+    get dbAvailable() { return dbAvailable; },
+    setDbAvailable(val) { dbAvailable = val; }
 };
