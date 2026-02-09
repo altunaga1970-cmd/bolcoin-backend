@@ -7,6 +7,13 @@ require('dotenv').config();
 
 const JWT_SECRET = process.env.JWT_SECRET || 'default-secret-key-change-in-production';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1h';
+const JWT_ADMIN_EXPIRES_IN = process.env.JWT_ADMIN_EXPIRES_IN || '4h';
+
+// Validar que en produccion no se use el secret por defecto
+if (process.env.NODE_ENV === 'production' && JWT_SECRET === 'default-secret-key-change-in-production') {
+    console.error('[FATAL] JWT_SECRET no configurado en produccion. Saliendo.');
+    process.exit(1);
+}
 
 // =================================
 // FUNCIONES DE JWT
@@ -17,15 +24,24 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1h';
  * @param {Object} user - Objeto del usuario
  * @returns {String} Token JWT
  */
-function generateToken(user) {
-    const payload = {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        role: user.role
+function generateToken(payload) {
+    // Admin JWT: payload tiene type:'admin'
+    if (payload.type === 'admin') {
+        return jwt.sign(payload, JWT_SECRET, {
+            expiresIn: JWT_ADMIN_EXPIRES_IN,
+            algorithm: 'HS256'
+        });
+    }
+
+    // User JWT (legacy): payload es un objeto user con id, username, etc.
+    const userPayload = {
+        id: payload.id,
+        username: payload.username,
+        email: payload.email,
+        role: payload.role
     };
 
-    return jwt.sign(payload, JWT_SECRET, {
+    return jwt.sign(userPayload, JWT_SECRET, {
         expiresIn: JWT_EXPIRES_IN,
         algorithm: 'HS256'
     });
@@ -85,6 +101,7 @@ function extractToken(authHeader) {
 module.exports = {
     JWT_SECRET,
     JWT_EXPIRES_IN,
+    JWT_ADMIN_EXPIRES_IN,
     generateToken,
     verifyToken,
     decodeToken,

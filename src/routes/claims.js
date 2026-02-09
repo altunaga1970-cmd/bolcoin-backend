@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const ClaimsService = require('../services/claimsService');
 const { authenticateWallet } = require('../middleware/web3Auth');
-const { requireAdminSession, requirePermission } = require('../middleware/siweAuth');
+const { requireAdmin, requirePermission } = require('../middleware/adminAuth');
 
 // =================================
 // RUTAS DE CLAIMS
@@ -151,7 +151,7 @@ router.post('/verify-proof', async (req, res) => {
  * POST /api/claims/admin/publish/:drawId
  * Publicar Merkle root para un sorteo (solo admin)
  */
-router.post('/admin/publish/:drawId', requireAdminSession, requirePermission('draws:results'), async (req, res) => {
+router.post('/admin/publish/:drawId', requireAdmin, requirePermission('draws:results'), async (req, res) => {
     try {
         const { drawId } = req.params;
 
@@ -178,7 +178,7 @@ router.post('/admin/publish/:drawId', requireAdminSession, requirePermission('dr
  * GET /api/claims/admin/draw/:drawId
  * Obtener todos los claims de un sorteo (admin)
  */
-router.get('/admin/draw/:drawId', requireAdminSession, requirePermission('draws:read'), async (req, res) => {
+router.get('/admin/draw/:drawId', requireAdmin, requirePermission('draws:read'), async (req, res) => {
     try {
         const { drawId } = req.params;
         const { status } = req.query;
@@ -203,7 +203,7 @@ router.get('/admin/draw/:drawId', requireAdminSession, requirePermission('draws:
  * POST /api/claims/admin/expire
  * Expirar claims vencidos (admin/cron)
  */
-router.post('/admin/expire', requireAdminSession, requirePermission('draws:manage'), async (req, res) => {
+router.post('/admin/expire', requireAdmin, requirePermission('draws:manage'), async (req, res) => {
     try {
         const expiredCount = await ClaimsService.expireOldClaims();
 

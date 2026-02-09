@@ -1,5 +1,7 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const { notFound, errorHandler } = require('./middleware/errorHandler');
@@ -44,9 +46,33 @@ app.use(cors({
     credentials: true
 }));
 
+// Helmet - security headers
+app.use(helmet());
+
 // Body parsers
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Rate limiting general para /api
+const apiLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minuto
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, message: 'Demasiadas peticiones. Intenta de nuevo en un minuto.' }
+});
+app.use('/api', apiLimiter);
+
+// Rate limiting estricto para auth admin
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutos
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, message: 'Demasiados intentos de autenticacion. Intenta de nuevo en 15 minutos.' }
+});
+app.use('/api/admin/auth/nonce', authLimiter);
+app.use('/api/admin/auth/verify', authLimiter);
 
 // Logging de requests en desarrollo
 if (process.env.NODE_ENV === 'development') {
@@ -98,7 +124,7 @@ if (process.env.NODE_ENV === 'production' || process.env.ENABLE_GEOBLOCK === 'tr
 // DEV ROUTES (development only)
 // =================================
 
-if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV !== 'production') {
+if (process.env.NODE_ENV === 'development') {
     const { getClient } = require('./config/database');
 
     // Give test balance to a wallet

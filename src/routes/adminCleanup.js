@@ -1,13 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const dataCleanupService = require('../services/dataCleanupService');
-const { requireAdminSession } = require('../middleware/siweAuth');
+const { requireAdmin } = require('../middleware/adminAuth');
 
 // =================================
 // RUTAS DE LIMPIEZA DE DATOS
 // =================================
 
-router.use(requireAdminSession);
+router.use(requireAdmin);
 
 /**
  * GET /api/admin/cleanup/status

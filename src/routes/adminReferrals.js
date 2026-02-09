@@ -1,13 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const referralAdminService = require('../services/referralAdminService');
-const { requireAdminSession } = require('../middleware/siweAuth');
+const { requireAdmin } = require('../middleware/adminAuth');
 
 // =================================
 // RUTAS DE REFERIDOS ADMIN
 // =================================
 
-router.use(requireAdminSession);
+router.use(requireAdmin);
 
 /**
  * GET /api/admin/referrals/stats

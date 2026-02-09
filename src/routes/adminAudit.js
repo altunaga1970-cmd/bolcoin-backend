@@ -1,13 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const auditService = require('../services/auditService');
-const { requireAdminSession } = require('../middleware/siweAuth');
+const { requireAdmin } = require('../middleware/adminAuth');
 
 // =================================
 // RUTAS DE AUDITORIA
 // =================================
 
-router.use(requireAdminSession);
+router.use(requireAdmin);
 
 /**
  * GET /api/admin/audit/report

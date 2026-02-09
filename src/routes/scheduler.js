@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const scheduler = require('../scheduler');
 const AuditLog = require('../models/AuditLog');
-const { authenticateWallet, requireAdminWallet } = require('../middleware/web3Auth');
+const { requireAdmin } = require('../middleware/adminAuth');
 
 // =================================
 // RUTAS DE SCHEDULER Y AUDIT LOGS
@@ -12,7 +12,7 @@ const { authenticateWallet, requireAdminWallet } = require('../middleware/web3Au
  * GET /api/scheduler/status
  * Obtener estado del scheduler
  */
-router.get('/status', authenticateWallet, requireAdminWallet, (req, res) => {
+router.get('/status', requireAdmin, (req, res) => {
     const status = scheduler.getStatus();
     res.json({
         success: true,
@@ -24,7 +24,7 @@ router.get('/status', authenticateWallet, requireAdminWallet, (req, res) => {
  * POST /api/scheduler/start
  * Iniciar scheduler
  */
-router.post('/start', authenticateWallet, requireAdminWallet, async (req, res) => {
+router.post('/start', requireAdmin, async (req, res) => {
     try {
         await scheduler.start();
         res.json({
@@ -43,7 +43,7 @@ router.post('/start', authenticateWallet, requireAdminWallet, async (req, res) =
  * POST /api/scheduler/stop
  * Detener scheduler
  */
-router.post('/stop', authenticateWallet, requireAdminWallet, async (req, res) => {
+router.post('/stop', requireAdmin, async (req, res) => {
     try {
         await scheduler.stop();
         res.json({
@@ -62,7 +62,7 @@ router.post('/stop', authenticateWallet, requireAdminWallet, async (req, res) =>
  * POST /api/scheduler/run-checks
  * Ejecutar verificaciones manualmente
  */
-router.post('/run-checks', authenticateWallet, requireAdminWallet, async (req, res) => {
+router.post('/run-checks', requireAdmin, async (req, res) => {
     try {
         await scheduler.runAllChecks();
         res.json({
@@ -85,7 +85,7 @@ router.post('/run-checks', authenticateWallet, requireAdminWallet, async (req, r
  * GET /api/audit-logs
  * Obtener logs de auditoría
  */
-router.get('/audit-logs', authenticateWallet, requireAdminWallet, async (req, res) => {
+router.get('/audit-logs', requireAdmin, async (req, res) => {
     try {
         const { page = 1, limit = 50, action, entityType } = req.query;
 
@@ -113,7 +113,7 @@ router.get('/audit-logs', authenticateWallet, requireAdminWallet, async (req, re
  * GET /api/audit-logs/draw/:drawId
  * Obtener logs de un sorteo específico
  */
-router.get('/audit-logs/draw/:drawId', authenticateWallet, requireAdminWallet, async (req, res) => {
+router.get('/audit-logs/draw/:drawId', requireAdmin, async (req, res) => {
     try {
         const { drawId } = req.params;
         const logs = await AuditLog.findByEntity('draw', drawId);

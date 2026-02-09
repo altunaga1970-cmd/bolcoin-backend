@@ -13,11 +13,10 @@ const express = require('express');
 const router = express.Router();
 const featureFlagService = require('../services/featureFlagService');
 const gameConfigService = require('../services/gameConfigService');
-const { authenticateWallet, requireAdminWallet } = require('../middleware/web3Auth');
+const { requireAdmin } = require('../middleware/adminAuth');
 
-// Todas las rutas requieren admin
-router.use(authenticateWallet);
-router.use(requireAdminWallet);
+// Todas las rutas requieren admin (JWT unificado)
+router.use(requireAdmin);
 
 /**
  * GET /api/admin/flags

@@ -59,7 +59,7 @@ function loadAdminWallets() {
     const wallets = {};
 
     if (!adminWalletsEnv) {
-        console.warn('ADMIN_WALLETS no configurado. Modo desarrollo: todas las wallets son admin.');
+        console.warn('[AdminWallets] ADMIN_WALLETS no configurado. Ningun wallet tendra acceso admin.');
         return wallets;
     }
 
@@ -81,7 +81,10 @@ function loadAdminWallets() {
         }
     }
 
-    console.log(`[AdminWallets] ${Object.keys(wallets).length} wallets admin configuradas`);
+    console.log(`[AdminWallets] ${Object.keys(wallets).length} wallets admin configuradas:`);
+    for (const [addr, role] of Object.entries(wallets)) {
+        console.log(`  - ${addr.substring(0, 10)}...${addr.substring(addr.length - 6)} : ${role}`);
+    }
     return wallets;
 }
 
@@ -105,9 +108,9 @@ function isAdminWallet(address) {
     if (!address) return false;
     const wallets = getAdminWallets();
 
-    // Modo desarrollo: si no hay wallets configuradas, permitir todo
+    // Si no hay wallets configuradas, NO permitir acceso
     if (Object.keys(wallets).length === 0) {
-        return true;
+        return false;
     }
 
     return address.toLowerCase() in wallets;
@@ -120,9 +123,9 @@ function getAdminRole(address) {
     if (!address) return null;
     const wallets = getAdminWallets();
 
-    // Modo desarrollo
+    // Si no hay wallets configuradas, no asignar rol
     if (Object.keys(wallets).length === 0) {
-        return ADMIN_ROLES.SUPERADMIN;
+        return null;
     }
 
     return wallets[address.toLowerCase()] || null;

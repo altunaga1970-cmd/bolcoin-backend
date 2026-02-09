@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminController');
-const { authenticate, requireAdmin } = require('../middleware/auth');
+const { requireAdmin } = require('../middleware/adminAuth');
 const {
     validateCreateDraw,
     validateEnterResults,
@@ -14,8 +14,7 @@ const {
 // RUTAS DE ADMINISTRACIÓN
 // =================================
 
-// Todas las rutas requieren autenticación y rol de admin
-router.use(authenticate);
+// Todas las rutas requieren autenticacion admin (JWT unificado)
 router.use(requireAdmin);
 
 // ====================

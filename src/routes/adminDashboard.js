@@ -1,14 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const metricsService = require('../services/metricsService');
-const { requireAdminSession } = require('../middleware/siweAuth');
+const { requireAdmin } = require('../middleware/adminAuth');
 
 // =================================
 // RUTAS DE DASHBOARD FINANCIERO
 // =================================
 
-// Todas las rutas requieren sesion de admin (SIWE)
-router.use(requireAdminSession);
+router.use(requireAdmin);
 
 /**
  * GET /api/admin/dashboard/metrics
