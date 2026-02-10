@@ -1,16 +1,13 @@
-const { Pool } = require('pg');
-require('dotenv').config();
+const pool = require('../../db');
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-
-async function migrate() {
+async function up() {
   console.log('Ejecutando migracion: add-payments-tables...\n');
 
+  const client = await pool.connect();
   try {
-    await pool.query('BEGIN');
+    await client.query('BEGIN');
 
-    // Tabla de pagos/depositos
-    await pool.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS payments (
         id SERIAL PRIMARY KEY,
         user_id INTEGER NOT NULL REFERENCES users(id),
@@ -27,22 +24,14 @@ async function migrate() {
         expires_at TIMESTAMP
       )
     `);
-    console.log('Tabla payments creada');
 
-    // Indices para payments
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id)
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id);
+      CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(payment_status);
+      CREATE INDEX IF NOT EXISTS idx_payments_payment_id ON payments(payment_id);
     `);
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(payment_status)
-    `);
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_payments_payment_id ON payments(payment_id)
-    `);
-    console.log('Indices de payments creados');
 
-    // Tabla de retiros
-    await pool.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS withdrawals (
         id SERIAL PRIMARY KEY,
         user_id INTEGER NOT NULL REFERENCES users(id),
@@ -60,30 +49,49 @@ async function migrate() {
         CONSTRAINT chk_withdrawal_amount CHECK (amount >= 5)
       )
     `);
-    console.log('Tabla withdrawals creada');
 
-    // Indices para withdrawals
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_withdrawals_user ON withdrawals(user_id)
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_withdrawals_user ON withdrawals(user_id);
+      CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawals(status);
+      CREATE INDEX IF NOT EXISTS idx_withdrawals_requires_approval ON withdrawals(requires_approval) WHERE requires_approval = true;
     `);
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawals(status)
-    `);
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_withdrawals_requires_approval ON withdrawals(requires_approval) WHERE requires_approval = true
-    `);
-    console.log('Indices de withdrawals creados');
 
-    await pool.query('COMMIT');
-    console.log('\nMigracion completada exitosamente!');
-
+    await client.query('COMMIT');
+    console.log('[Migration] Payments and withdrawals tables created successfully');
   } catch (error) {
-    await pool.query('ROLLBACK');
-    console.error('Error en migracion:', error.message);
+    await client.query('ROLLBACK');
+    console.error('[Migration] Error creating payments tables:', error.message);
     throw error;
   } finally {
-    await pool.end();
+    client.release();
   }
 }
 
-migrate().catch(console.error);
+async function down() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DROP TABLE IF EXISTS withdrawals CASCADE');
+    await client.query('DROP TABLE IF EXISTS payments CASCADE');
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+if (require.main === module) {
+  const action = process.argv[2];
+  if (action === 'up') {
+    up().then(() => process.exit(0)).catch(() => process.exit(1));
+  } else if (action === 'down') {
+    down().then(() => process.exit(0)).catch(() => process.exit(1));
+  } else {
+    console.log('Usage: node add-payments-tables.js [up|down]');
+    process.exit(1);
+  }
+}
+
+module.exports = { up, down };

@@ -20,10 +20,6 @@ function sanitizeDatabaseUrl(url) {
     return url;
 }
 
-// DEBUG: Log all env var keys that contain DB or DATABASE (temporary)
-const dbEnvKeys = Object.keys(process.env).filter(k => k.includes('DATABASE') || k.includes('DB') || k.includes('POSTGRES') || k.includes('PG'));
-console.log('[DB] Environment variables with DB/DATABASE/POSTGRES/PG:', dbEnvKeys.length > 0 ? dbEnvKeys.join(', ') : 'NONE FOUND');
-
 const databaseUrl = sanitizeDatabaseUrl(
     process.env.DATABASE_URL || process.env.DATABASE_PUBLIC_URL
 );
