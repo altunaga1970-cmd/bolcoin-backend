@@ -22,6 +22,14 @@ function sanitizeDatabaseUrl(url) {
 
 const databaseUrl = sanitizeDatabaseUrl(process.env.DATABASE_URL);
 
+// Log connection info (hide password)
+if (databaseUrl) {
+    const safeUrl = databaseUrl.replace(/\/\/([^:]+):([^@]+)@/, '//$1:****@');
+    console.log('[DB] DATABASE_URL:', safeUrl);
+} else {
+    console.error('[DB] WARNING: DATABASE_URL is not set! Database will not connect.');
+}
+
 // Configuración del pool de conexiones a PostgreSQL
 const pool = new Pool({
     connectionString: databaseUrl,
@@ -88,7 +96,9 @@ const testConnection = async () => {
         console.log('✓ Conexión a PostgreSQL exitosa:', res.rows[0].now);
         return true;
     } catch (error) {
-        console.error('✗ Error conectando a PostgreSQL:', error.message);
+        console.error('✗ Error conectando a PostgreSQL:', error.message || error.code || error);
+        if (error.code) console.error('  Error code:', error.code);
+        if (error.errno) console.error('  Errno:', error.errno);
         return false;
     }
 };
