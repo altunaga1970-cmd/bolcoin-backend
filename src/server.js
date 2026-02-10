@@ -42,7 +42,7 @@ async function startServer() {
     });
 
     // ==========================================
-    // STEP 2: Try DB connection (non-fatal)
+    // STEP 2: Try DB connection + auto-init (non-fatal)
     // ==========================================
     let dbConnected = false;
     try {
@@ -50,7 +50,15 @@ async function startServer() {
         dbConnected = await testConnection();
         if (dbConnected) {
             db.setDbAvailable(true);
-            console.log('Conexion a PostgreSQL exitosa\n');
+            console.log('Conexion a PostgreSQL exitosa');
+
+            // Auto-initialize database schema + migrations on first deploy
+            try {
+                const { initDatabase } = require('./db/init');
+                await initDatabase();
+            } catch (initErr) {
+                console.error('[DEGRADED] DB init error (non-fatal):', initErr.message);
+            }
         } else {
             console.error('[DEGRADED] No se pudo conectar a PostgreSQL. API operativa sin DB.');
         }

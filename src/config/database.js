@@ -3,9 +3,28 @@ require('dotenv').config();
 
 let dbAvailable = false;
 
+// Sanitize DATABASE_URL - Railway sometimes has prefix issues
+function sanitizeDatabaseUrl(url) {
+    if (!url) return url;
+    // Fix: "railwaypostgresql://..." -> "postgresql://..."
+    const pgIndex = url.indexOf('postgresql://');
+    if (pgIndex > 0) {
+        const fixed = url.substring(pgIndex);
+        console.log('[DB] Fixed malformed DATABASE_URL (removed prefix before postgresql://)');
+        return fixed;
+    }
+    // Fix: "postgres://" -> "postgresql://" (some providers use short form)
+    if (url.startsWith('postgres://') && !url.startsWith('postgresql://')) {
+        return url.replace('postgres://', 'postgresql://');
+    }
+    return url;
+}
+
+const databaseUrl = sanitizeDatabaseUrl(process.env.DATABASE_URL);
+
 // Configuración del pool de conexiones a PostgreSQL
 const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
+    connectionString: databaseUrl,
     max: parseInt(process.env.DATABASE_POOL_MAX) || 10,
     min: parseInt(process.env.DATABASE_POOL_MIN) || 2,
     idleTimeoutMillis: 30000,

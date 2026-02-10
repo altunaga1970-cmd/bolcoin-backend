@@ -28,6 +28,7 @@ const kenoRoutes = require('./routes/keno');
 // MVP: Nuevas rutas
 const publicConfigRoutes = require('./routes/publicConfig');
 const adminFlagsRoutes = require('./routes/adminFlags');
+const adminOpsRoutes = require('./routes/adminOps');
 // const userRoutes = require('./routes/user');
 
 // =================================
@@ -41,8 +42,19 @@ const app = express();
 // =================================
 
 // CORS - Permitir solicitudes desde el frontend
+// Supports: FRONTEND_URL (single) or ALLOWED_ORIGINS (comma-separated for multiple domains)
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:3000')
+    .split(',')
+    .map(o => o.trim())
+    .filter(Boolean);
+
 app.use(cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: (origin, callback) => {
+        // Allow requests with no origin (mobile apps, curl, health checks)
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.includes(origin)) return callback(null, true);
+        callback(new Error(`CORS: origin ${origin} not allowed`));
+    },
     credentials: true
 }));
 
@@ -417,6 +429,7 @@ app.use('/api/admin/referrals', adminReferralsRoutes);
 app.use('/api/admin/audit', adminAuditRoutes);
 app.use('/api/admin/cleanup', adminCleanupRoutes);
 app.use('/api/admin/flags', adminFlagsRoutes);
+app.use('/api/admin/ops', adminOpsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/scheduler', schedulerRoutes);
