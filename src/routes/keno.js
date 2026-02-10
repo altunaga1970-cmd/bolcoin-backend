@@ -6,6 +6,7 @@
  */
 
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const router = express.Router();
 const kenoService = require('../services/kenoService');
 const kenoSessionService = require('../services/kenoSessionService');
@@ -14,6 +15,16 @@ const kenoPoolHealthService = require('../services/kenoPoolHealthService');
 const { authenticateWallet } = require('../middleware/web3Auth');
 const { authenticate, requireAdmin } = require('../middleware/auth');
 const { requireFlag } = require('../middleware/featureFlag');
+
+// Rate limiting for play endpoint: 10 plays per minute per IP
+const playLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  keyGenerator: (req) => req.user?.address || req.ip,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Demasiadas jugadas. Espera un momento.' }
+});
 
 // =================================
 // RUTAS PUBLICAS
@@ -73,7 +84,7 @@ router.get('/balance', requireFlag('game_keno'), authenticateWallet, async (req,
  * Body: { numbers: [1, 5, 10, ...] }
  * MVP: amount es ignorado (siempre 1 USDT)
  */
-router.post('/play', requireFlag('game_keno'), authenticateWallet, async (req, res) => {
+router.post('/play', requireFlag('game_keno'), authenticateWallet, playLimiter, async (req, res) => {
   try {
     const walletAddress = req.user.address;
     const { numbers, amount } = req.body;

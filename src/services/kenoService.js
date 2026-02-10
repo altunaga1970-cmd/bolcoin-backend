@@ -313,10 +313,10 @@ async function playKeno(walletAddress, selectedNumbers, betAmount) {
       poolDelta = -payout;
     }
 
-    // Actualizar pool balance y estadisticas
+    // Actualizar pool balance y estadisticas (GREATEST prevents negative balance)
     await client.query(
       `UPDATE keno_pool
-       SET balance = balance + $1,
+       SET balance = GREATEST(0, balance + $1),
            total_bets = total_bets + $2,
            total_payouts = total_payouts + $3,
            total_fees = total_fees + $4,

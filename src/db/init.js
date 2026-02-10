@@ -38,6 +38,7 @@ const JS_MIGRATIONS = [
   'add-keno-sessions.js',
   'add-keno-vrf.js',
   'add-feature-flags.js',
+  'add-keno-security-fixes.js',
 ];
 
 async function runBaseSchema() {
