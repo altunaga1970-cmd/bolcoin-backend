@@ -24,7 +24,9 @@ function sanitizeDatabaseUrl(url) {
 const dbEnvKeys = Object.keys(process.env).filter(k => k.includes('DATABASE') || k.includes('DB') || k.includes('POSTGRES') || k.includes('PG'));
 console.log('[DB] Environment variables with DB/DATABASE/POSTGRES/PG:', dbEnvKeys.length > 0 ? dbEnvKeys.join(', ') : 'NONE FOUND');
 
-const databaseUrl = sanitizeDatabaseUrl(process.env.DATABASE_URL);
+const databaseUrl = sanitizeDatabaseUrl(
+    process.env.DATABASE_URL || process.env.DATABASE_PUBLIC_URL
+);
 
 // Log connection info (hide password)
 if (databaseUrl) {
