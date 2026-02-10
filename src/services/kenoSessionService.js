@@ -14,7 +14,6 @@ const ethers = require('ethers');
 const RPC_URL = process.env.RPC_URL || 'http://127.0.0.1:8545';
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
 const OPERATOR_PRIVATE_KEY = process.env.OPERATOR_PRIVATE_KEY;
-const DEFAULT_PRIVATE_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
 
 // ABI para liquidación
 const SETTLEMENT_ABI = [
@@ -34,10 +33,13 @@ let signer = null;
  */
 function initContract() {
   if (!contract && CONTRACT_ADDRESS) {
+    if (!OPERATOR_PRIVATE_KEY) {
+      console.error('[KenoSessionService] FATAL: OPERATOR_PRIVATE_KEY not set. On-chain settlement disabled.');
+      return null;
+    }
     try {
       provider = new ethers.JsonRpcProvider(RPC_URL);
-      const privateKey = OPERATOR_PRIVATE_KEY || DEFAULT_PRIVATE_KEY;
-      signer = new ethers.Wallet(privateKey, provider);
+      signer = new ethers.Wallet(OPERATOR_PRIVATE_KEY, provider);
       contract = new ethers.Contract(CONTRACT_ADDRESS, SETTLEMENT_ABI, signer);
       console.log('[KenoSessionService] Contract initialized:', CONTRACT_ADDRESS);
     } catch (err) {
@@ -197,28 +199,26 @@ async function settleSession(walletAddress) {
       return { success: true, message: 'Empty session closed', netResult: 0 };
     }
 
-    // Liquidar con el contrato
-    initContract();
-
-    if (!contract) {
-      throw new Error('Contract not initialized');
-    }
-
+    // MVP: On-chain settlement disabled (contract ABI mismatch - Phase 2 not ready)
+    // Session settlement is DB-only for now. On-chain reconciliation will be added in Phase 2.
     let txHash = null;
 
     if (netResult !== 0) {
-      const absAmount = Math.abs(netResult);
-      const amountWei = ethers.parseUnits(absAmount.toFixed(6), 6);
-      const isProfit = netResult > 0;
+      console.log(`[KenoSessionService] Settling session for ${wallet}: ${netResult > 0 ? '+' : ''}${netResult.toFixed(2)} USDT (DB-only, on-chain Phase 2)`);
 
-      console.log(`[KenoSessionService] Settling session for ${wallet}: ${netResult > 0 ? '+' : ''}${netResult.toFixed(2)} USDT`);
-
-      // Llamar al contrato
-      const tx = await contract.settleKenoSession(wallet, amountWei, isProfit);
-      const receipt = await tx.wait();
-      txHash = receipt.hash;
-
-      console.log(`[KenoSessionService] Settlement tx: ${txHash}`);
+      // Update user balance in DB to reflect session result
+      if (netResult > 0) {
+        await client.query(
+          'UPDATE users SET balance = balance + $1, updated_at = NOW() WHERE wallet_address = $2',
+          [netResult, wallet]
+        );
+      } else {
+        // Loss: ensure balance doesn't go below 0
+        await client.query(
+          'UPDATE users SET balance = GREATEST(0, balance + $1), updated_at = NOW() WHERE wallet_address = $2',
+          [netResult, wallet]
+        );
+      }
     }
 
     // Marcar sesión como liquidada
@@ -297,7 +297,8 @@ async function settleOldSessions(hoursOld = 24) {
     `SELECT DISTINCT wallet_address FROM keno_sessions
      WHERE status = 'active'
      AND games_played > 0
-     AND updated_at < NOW() - INTERVAL '${hoursOld} hours'`
+     AND updated_at < NOW() - make_interval(hours => $1)`,
+    [parseInt(hoursOld) || 24]
   );
 
   console.log(`[KenoSessionService] Found ${oldSessions.rows.length} old sessions to settle`);

@@ -283,10 +283,11 @@ async function getPoolHistory(days = 7) {
          SUM(total_bets) as bets,
          SUM(total_payouts) as payouts
        FROM keno_pool_history
-       WHERE timestamp > NOW() - INTERVAL '${days} days'
+       WHERE timestamp > NOW() - make_interval(days => $1)
        GROUP BY date_trunc('hour', timestamp)
        ORDER BY hour DESC
-       LIMIT 168` // 7 dias * 24 horas
+       LIMIT 168`, // 7 dias * 24 horas
+      [parseInt(days) || 7]
     );
 
     return result.rows.map(row => ({

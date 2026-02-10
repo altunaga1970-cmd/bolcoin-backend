@@ -116,7 +116,7 @@ router.post('/play', requireFlag('game_keno'), authenticateWallet, async (req, r
 router.get('/history', requireFlag('game_keno'), authenticateWallet, async (req, res) => {
   try {
     const walletAddress = req.user.address;
-    const limit = parseInt(req.query.limit) || 20;
+    const limit = Math.min(parseInt(req.query.limit) || 20, 100);
 
     const history = await kenoService.getGameHistory(walletAddress, limit);
 
@@ -201,38 +201,8 @@ router.post('/session/settle', requireFlag('game_keno'), authenticateWallet, asy
   }
 });
 
-/**
- * GET /api/keno/session/settle
- * Liquidar sesión via sendBeacon (acepta wallet como query param)
- * Usado cuando el usuario cierra la pestaña
- */
-router.get('/session/settle', async (req, res) => {
-  try {
-    const walletAddress = req.query.wallet;
-
-    if (!walletAddress) {
-      return res.status(400).json({
-        success: false,
-        message: 'Wallet address required'
-      });
-    }
-
-    console.log(`[Keno] Settling session via beacon for ${walletAddress}`);
-
-    const result = await kenoSessionService.settleSession(walletAddress);
-
-    res.json({
-      success: true,
-      data: result
-    });
-  } catch (err) {
-    console.error('[Keno] Error settling session via beacon:', err);
-    res.status(500).json({
-      success: false,
-      message: err.message || 'Error al liquidar sesión'
-    });
-  }
-});
+// REMOVED: GET /session/settle was unauthenticated and allowed anyone to settle any user's session.
+// Session settlement now only via POST /session/settle (authenticated) or server-side auto-settle cron.
 
 /**
  * POST /api/keno/session/start

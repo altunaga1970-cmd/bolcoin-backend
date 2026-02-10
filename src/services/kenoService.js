@@ -151,62 +151,111 @@ async function playKeno(walletAddress, selectedNumbers, betAmount) {
     throw new Error('Los numeros deben ser unicos');
   }
 
-  // Verificar balance efectivo (contrato + sesion)
-  const balances = await getTotalBalance(wallet);
-  if (bet > balances.totalBalance) {
-    throw new Error(`Balance insuficiente. Tienes: $${balances.totalBalance.toFixed(2)} USDT`);
+  // Validar que sean enteros
+  for (const num of selectedNumbers) {
+    if (!Number.isInteger(num)) {
+      throw new Error(`Numero ${num} debe ser entero`);
+    }
   }
-
-  // MVP: Validar solvencia del contrato (debe tener al menos maxPayout)
-  if (balances.contractBalance < config.maxPayout) {
-    throw new Error('Sistema temporalmente sin liquidez. Intenta mas tarde.');
-  }
-
-  // Obtener o crear sesion activa
-  const session = await kenoSessionService.getOrCreateSession(wallet);
 
   // Generar seeds para Provably Fair + VRF
   const timestamp = Date.now();
   const serverSeed = kenoVrfService.generateServerSeed();
   const clientSeed = ''; // Puede ser proporcionado por el usuario en futuro
-  const nonce = await kenoVrfService.getNextNonce(wallet);
 
-  // Generar seed combinado verificable
-  const seed = kenoVrfService.generateCombinedSeed(serverSeed, clientSeed, nonce);
-
-  // Generar 20 numeros aleatorios
-  const drawnNumbers = generateRandomNumbers(
-    config.drawnNumbers,
-    config.totalNumbers,
-    seed
-  );
-
-  // Calcular aciertos
-  const matchedNumbers = selectedNumbers.filter(n => drawnNumbers.includes(n));
-  const hits = matchedNumbers.length;
-  const spots = selectedNumbers.length;
-
-  // Obtener multiplicador de la tabla
-  const rawMultiplier = PAYOUT_TABLE[spots]?.[hits] || 0;
-
-  // MVP: Calcular payout con cap aplicado
-  const { theoreticalPayout, actualPayout, capped } = gameConfigService.calculateCappedPayout(
-    bet,
-    rawMultiplier,
-    config.maxPayout
-  );
-
-  const payout = actualPayout;
-  const netResult = payout - bet;
-
-  // Registrar en base de datos
+  // Registrar en base de datos con transaccion y bloqueo atomico
   const gameId = `KENO-${timestamp}-${wallet.substring(2, 8)}`;
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // Insertar juego (vinculado a la sesion) con seeds para VRF
+    // BLOCKER 7 FIX: Lock session row to prevent concurrent double-spend
+    // Get or create session within transaction
+    let sessionResult = await client.query(
+      `SELECT * FROM keno_sessions WHERE wallet_address = $1 AND status = 'active' FOR UPDATE`,
+      [wallet]
+    );
+
+    let session;
+    if (sessionResult.rows.length === 0) {
+      const newSession = await client.query(
+        `INSERT INTO keno_sessions (wallet_address, status)
+         VALUES ($1, 'active')
+         ON CONFLICT DO NOTHING
+         RETURNING *`,
+        [wallet]
+      );
+      if (newSession.rows.length === 0) {
+        // Race: another transaction just created it, retry read with lock
+        sessionResult = await client.query(
+          `SELECT * FROM keno_sessions WHERE wallet_address = $1 AND status = 'active' FOR UPDATE`,
+          [wallet]
+        );
+        session = sessionResult.rows[0];
+      } else {
+        session = newSession.rows[0];
+      }
+    } else {
+      session = sessionResult.rows[0];
+    }
+
+    if (!session) {
+      throw new Error('No se pudo crear sesion de juego');
+    }
+
+    // Verify balance INSIDE the transaction (atomic with game insert)
+    const balanceResult = await client.query(
+      'SELECT balance FROM users WHERE wallet_address = $1 FOR UPDATE',
+      [wallet]
+    );
+    const userBalance = balanceResult.rows.length > 0 ? parseFloat(balanceResult.rows[0].balance) : 0;
+
+    // Calculate effective balance = user DB balance + session net result
+    const sessionNet = parseFloat(session.total_won || 0) - parseFloat(session.total_wagered || 0);
+    const effectiveBalance = userBalance + sessionNet;
+
+    if (bet > effectiveBalance) {
+      await client.query('ROLLBACK');
+      throw new Error(`Balance insuficiente. Tienes: $${effectiveBalance.toFixed(2)} USDT`);
+    }
+
+    // Get nonce within transaction to prevent duplicates
+    const nonceResult = await client.query(
+      `SELECT COALESCE(MAX(nonce), -1) + 1 as next_nonce FROM keno_games WHERE wallet_address = $1`,
+      [wallet]
+    );
+    const nonce = nonceResult.rows[0]?.next_nonce || 0;
+
+    // Generar seed combinado verificable
+    const seed = kenoVrfService.generateCombinedSeed(serverSeed, clientSeed, nonce);
+
+    // Generar 20 numeros aleatorios
+    const drawnNumbers = generateRandomNumbers(
+      config.drawnNumbers,
+      config.totalNumbers,
+      seed
+    );
+
+    // Calcular aciertos
+    const matchedNumbers = selectedNumbers.filter(n => drawnNumbers.includes(n));
+    const hits = matchedNumbers.length;
+    const spots = selectedNumbers.length;
+
+    // Obtener multiplicador de la tabla
+    const rawMultiplier = PAYOUT_TABLE[spots]?.[hits] || 0;
+
+    // MVP: Calcular payout con cap aplicado
+    const { theoreticalPayout, actualPayout, capped } = gameConfigService.calculateCappedPayout(
+      bet,
+      rawMultiplier,
+      config.maxPayout
+    );
+
+    const payout = actualPayout;
+    const netResult = payout - bet;
+
+    // Insertar juego (vinculado a la sesion) con seeds para VRF (nonce now from transaction)
     await client.query(
       `INSERT INTO keno_games (
         game_id, wallet_address, selected_numbers, drawn_numbers, matched_numbers,

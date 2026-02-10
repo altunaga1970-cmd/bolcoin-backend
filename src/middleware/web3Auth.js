@@ -34,13 +34,12 @@ function verifySignature(message, signature) {
  * Middleware para autenticar usuario por wallet
  * Espera headers:
  * - x-wallet-address: direccion de la wallet
- * - x-wallet-signature: firma del mensaje (opcional, para operaciones sensibles)
- * - x-wallet-message: mensaje firmado (opcional)
+ * - x-wallet-signature: firma del mensaje (OBLIGATORIO)
+ * - x-wallet-message: mensaje firmado (OBLIGATORIO)
  */
 async function authenticateWallet(req, res, next) {
     try {
         const walletAddress = req.headers['x-wallet-address'];
-        console.log(`[Web3Auth] Received wallet address: ${walletAddress}`);
 
         if (!walletAddress) {
             return res.status(401).json({
@@ -58,31 +57,64 @@ async function authenticateWallet(req, res, next) {
         }
 
         const normalizedAddress = walletAddress.toLowerCase();
-        console.log(`[Web3Auth] Normalized address: ${normalizedAddress}`);
 
-        // Si hay firma, verificarla
+        // Firma OBLIGATORIA - verificar identidad criptografica
         const signature = req.headers['x-wallet-signature'];
         const message = req.headers['x-wallet-message'];
 
-        if (signature && message) {
-            const recoveredAddress = verifySignature(message, signature);
-
-            if (recoveredAddress !== normalizedAddress) {
-                return res.status(401).json({
-                    success: false,
-                    message: 'Firma de wallet invalida'
-                });
-            }
+        if (!signature || !message) {
+            return res.status(401).json({
+                success: false,
+                message: 'Firma de wallet requerida'
+            });
         }
 
-        // Determinar rol
-        const isAdmin = ADMIN_WALLETS.length === 0 || // Dev mode
+        // Validate message format: "Bolcoin Auth: <address> at <dayTimestamp>"
+        const messageRegex = /^Bolcoin Auth: (0x[a-f0-9]{40}) at (\d+)$/;
+        const match = message.match(messageRegex);
+        if (!match) {
+            return res.status(401).json({
+                success: false,
+                message: 'Formato de mensaje de autenticacion invalido'
+            });
+        }
+
+        // Verify the message address matches the claimed address
+        if (match[1] !== normalizedAddress) {
+            return res.status(401).json({
+                success: false,
+                message: 'Direccion en mensaje no coincide'
+            });
+        }
+
+        // Verify the day timestamp is not too old (max 2 days)
+        const messageDayTs = parseInt(match[2]);
+        const currentDayTs = Math.floor(Date.now() / 86400000);
+        if (Math.abs(currentDayTs - messageDayTs) > 2) {
+            return res.status(401).json({
+                success: false,
+                message: 'Firma expirada. Reconecta tu wallet.'
+            });
+        }
+
+        const recoveredAddress = verifySignature(message, signature);
+
+        if (recoveredAddress !== normalizedAddress) {
+            return res.status(401).json({
+                success: false,
+                message: 'Firma de wallet invalida'
+            });
+        }
+
+        // Determinar rol - en produccion, ADMIN_WALLETS vacio = nadie es admin
+        const isAdmin = (process.env.NODE_ENV === 'development' && ADMIN_WALLETS.length === 0) ||
                        ADMIN_WALLETS.includes(normalizedAddress);
 
         // Look up or create user in database
         let userId = null;
+        let client = null;
         try {
-            const client = await getClient();
+            client = await getClient();
 
             // First, try to find user by wallet_address
             let userResult = await client.query(
@@ -92,28 +124,29 @@ async function authenticateWallet(req, res, next) {
 
             if (userResult.rows.length === 0) {
                 // Create new user with wallet address
-                try {
+                userResult = await client.query(
+                    `INSERT INTO users (username, email, password_hash, balance, wallet_address, created_at, updated_at)
+                     VALUES ($1, $2, 'web3-auth', 0, $3, NOW(), NOW())
+                     ON CONFLICT (wallet_address) DO NOTHING
+                     RETURNING id`,
+                    [normalizedAddress, `${normalizedAddress}@wallet.local`, normalizedAddress]
+                );
+
+                // If ON CONFLICT hit, re-fetch
+                if (userResult.rows.length === 0) {
                     userResult = await client.query(
-                        `INSERT INTO users (username, email, password_hash, balance, wallet_address, created_at, updated_at)
-                         VALUES ($1, $2, 'web3-auth', 1000, $3, NOW(), NOW())
-                         RETURNING id`,
-                        [normalizedAddress, `${normalizedAddress}@wallet.local`, normalizedAddress]
+                        'SELECT id FROM users WHERE wallet_address = $1',
+                        [normalizedAddress]
                     );
-                    console.log('Auto-created user for wallet:', normalizedAddress, 'with ID:', userResult.rows[0]?.id);
-                } catch (insertErr) {
-                    // If insert fails (e.g., column doesn't exist), try again without wallet_address
-                    if (insertErr.code === '42703') { // undefined_column
-                        console.log('wallet_address column not found, run migration first');
-                    }
-                    throw insertErr;
                 }
             }
 
             userId = userResult.rows[0]?.id;
-            client.release();
         } catch (dbError) {
             console.error('Error with user lookup/creation:', dbError.message);
             // Continue with wallet address as fallback ID
+        } finally {
+            if (client) client.release();
         }
 
         // Agregar usuario al request
@@ -185,7 +218,7 @@ async function optionalWalletAuth(req, res, next) {
 
         if (walletAddress && ethers.isAddress(walletAddress)) {
             const normalizedAddress = walletAddress.toLowerCase();
-            const isAdmin = ADMIN_WALLETS.length === 0 ||
+            const isAdmin = (process.env.NODE_ENV === 'development' && ADMIN_WALLETS.length === 0) ||
                            ADMIN_WALLETS.includes(normalizedAddress);
 
             req.user = {
