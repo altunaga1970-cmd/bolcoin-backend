@@ -126,10 +126,14 @@ app.get('/health', (req, res) => {
 // GEOBLOCKING (Produccion)
 // =================================
 
-// Activar geoblocking solo en produccion o cuando ENABLE_GEOBLOCK=true
-if (process.env.NODE_ENV === 'production' || process.env.ENABLE_GEOBLOCK === 'true') {
+// Activar geoblocking: en produccion por defecto, desactivar con ENABLE_GEOBLOCK=false
+const enableGeoblock = process.env.ENABLE_GEOBLOCK === 'false' ? false :
+                       (process.env.NODE_ENV === 'production' || process.env.ENABLE_GEOBLOCK === 'true');
+if (enableGeoblock) {
     console.log('[GeoBlock] Geoblocking enabled');
     app.use('/api', geoBlockMiddleware);
+} else {
+    console.log('[GeoBlock] Geoblocking DISABLED');
 }
 
 // =================================
