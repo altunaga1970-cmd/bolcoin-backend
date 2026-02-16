@@ -25,6 +25,7 @@ const claimsRoutes = require('./routes/claims');
 const bankrollRoutes = require('./routes/bankroll');
 const lotteryRoutes = require('./routes/lottery');
 const kenoRoutes = require('./routes/keno');
+const adminBolitaRoutes = require('./routes/adminBolita');
 // MVP: Nuevas rutas
 const publicConfigRoutes = require('./routes/publicConfig');
 const adminFlagsRoutes = require('./routes/adminFlags');
@@ -36,6 +37,9 @@ const adminOpsRoutes = require('./routes/adminOps');
 // =================================
 
 const app = express();
+
+// Railway uses a reverse proxy — trust the first proxy hop
+app.set('trust proxy', 1);
 
 // =================================
 // MIDDLEWARES GLOBALES
@@ -441,6 +445,7 @@ app.use('/api/claims', claimsRoutes);
 app.use('/api/bankroll', bankrollRoutes);
 app.use('/api/lottery', lotteryRoutes);
 app.use('/api/keno', kenoRoutes);
+app.use('/api/admin/bolita', adminBolitaRoutes);
 // app.use('/api/user', userRoutes);
 
 // =================================
@@ -452,6 +457,16 @@ app.use(notFound);
 
 // Manejador global de errores
 app.use(errorHandler);
+
+// =================================
+// START BOLITA EVENT INDEXER (if configured)
+// =================================
+if (process.env.BOLITA_CONTRACT_ADDRESS) {
+    const { bolitaIndexer } = require('./services/bolitaIndexer');
+    bolitaIndexer.start().catch(err => {
+        console.error('[App] Failed to start Bolita indexer:', err.message);
+    });
+}
 
 // =================================
 // EXPORTAR APP

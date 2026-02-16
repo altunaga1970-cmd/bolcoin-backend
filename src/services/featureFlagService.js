@@ -72,7 +72,7 @@ async function getAllFlags() {
 function getDefaultFlags() {
   return {
     game_keno: { enabled: true, description: 'Keno MVP', metadata: {} },
-    game_bolita: { enabled: false, description: 'La Bolita', metadata: { coming_soon: true } },
+    game_bolita: { enabled: true, description: 'La Bolita', metadata: {} },
     game_fortuna: { enabled: false, description: 'La Fortuna', metadata: { coming_soon: true } },
     feature_history: { enabled: true, description: 'Historial', metadata: {} },
     feature_deposits: { enabled: true, description: 'Depositos', metadata: {} },

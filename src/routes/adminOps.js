@@ -56,6 +56,29 @@ router.get('/summary', async (req, res) => {
       // not available
     }
 
+    // Bolita pool - try to get if available
+    let bolitaPool = null;
+    if (dbAvailable) {
+      try {
+        const bolitaRes = await query(`
+          SELECT
+            COUNT(*) FILTER (WHERE status = 'open') as open_draws,
+            COUNT(*) FILTER (WHERE status = 'completed') as completed_draws,
+            COUNT(*) as total_draws
+          FROM draws WHERE draw_type = 'bolita'
+        `);
+        bolitaPool = {
+          draws: {
+            open: parseInt(bolitaRes.rows[0].open_draws),
+            completed: parseInt(bolitaRes.rows[0].completed_draws),
+            total: parseInt(bolitaRes.rows[0].total_draws)
+          }
+        };
+      } catch (e) {
+        // not available
+      }
+    }
+
     // Feature flags
     let flags = {};
     try {
@@ -73,6 +96,7 @@ router.get('/summary', async (req, res) => {
       totals,
       pendingWithdrawals,
       kenoPool,
+      bolitaPool,
       flags
     });
   } catch (error) {

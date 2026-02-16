@@ -14,6 +14,23 @@ async function up() {
   try {
     await client.query('BEGIN');
 
+    // 0. Create keno_pool table if it doesn't exist (required before ALTER)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS keno_pool (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        balance DECIMAL(15, 6) NOT NULL DEFAULT 500,
+        total_bets DECIMAL(15, 6) DEFAULT 0,
+        total_payouts DECIMAL(15, 6) DEFAULT 0,
+        total_fees DECIMAL(15, 6) DEFAULT 0,
+        games_played INTEGER DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT NOW(),
+        CONSTRAINT single_pool CHECK (id = 1)
+      )
+    `);
+    await client.query(`
+      INSERT INTO keno_pool (id, balance) VALUES (1, 500) ON CONFLICT DO NOTHING
+    `);
+
     // 1. Add CHECK constraint on keno_pool balance (prevent negative pool)
     await client.query(`
       DO $$

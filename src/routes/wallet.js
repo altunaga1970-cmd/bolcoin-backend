@@ -8,7 +8,40 @@ const { validateRecharge, validatePagination } = require('../middleware/validati
 // RUTAS DE BILLETERA
 // =================================
 
-// Todas las rutas requieren autenticación Web3
+/**
+ * GET /api/wallet/balance-by-address
+ * Read-only balance lookup by wallet address (no signature required)
+ * Only returns balance - no mutations possible
+ */
+router.get('/balance-by-address', async (req, res) => {
+    try {
+        const address = req.query.address;
+        if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address)) {
+            return res.status(400).json({ success: false, message: 'Valid wallet address required' });
+        }
+
+        const pool = require('../db');
+        const result = await pool.query(
+            'SELECT balance FROM users WHERE wallet_address = $1',
+            [address.toLowerCase()]
+        );
+
+        const balance = result.rows[0]?.balance || '0';
+
+        res.json({
+            success: true,
+            data: {
+                balance: parseFloat(balance).toFixed(2),
+                address: address.toLowerCase()
+            }
+        });
+    } catch (err) {
+        console.error('Error getting balance by address:', err);
+        res.status(500).json({ success: false, message: 'Error' });
+    }
+});
+
+// Authenticated routes below
 router.use(authenticateWallet);
 
 /**

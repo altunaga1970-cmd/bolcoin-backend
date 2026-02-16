@@ -128,7 +128,7 @@ async function up() {
     await client.query(`
       INSERT INTO feature_flags (key, enabled, description, metadata) VALUES
         ('game_keno', true, 'Juego Keno - activo en MVP', '{"priority": 1}'),
-        ('game_bolita', false, 'La Bolita - proximamente', '{"coming_soon": true}'),
+        ('game_bolita', true, 'La Bolita - non-custodial betting', '{}'),
         ('game_fortuna', false, 'La Fortuna (Loteria) - proximamente', '{"coming_soon": true}'),
         ('feature_history', true, 'Historial de jugadas', '{}'),
         ('feature_deposits', true, 'Depositos de USDT', '{}'),
