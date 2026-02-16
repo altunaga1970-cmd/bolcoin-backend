@@ -41,7 +41,9 @@ jest.mock('../kenoVrfService', () => ({
   generateCombinedSeed: jest.fn((s, c, n) => `${s}-${c}-${n}`)
 }));
 
-const { KENO_CONFIG, PAYOUT_TABLE } = require('../kenoService');
+const pool = require('../../db');
+const gameConfigService = require('../gameConfigService');
+const { KENO_CONFIG, PAYOUT_TABLE, playKeno } = require('../kenoService');
 
 describe('kenoService', () => {
   describe('KENO_CONFIG', () => {
@@ -191,6 +193,157 @@ describe('kenoService', () => {
       const a = generateRandomNumbers(20, 80, 'seed-a');
       const b = generateRandomNumbers(20, 80, 'seed-b');
       expect(a).not.toEqual(b);
+    });
+  });
+
+  describe('playKeno', () => {
+    let mockClient;
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      mockClient = {
+        query: jest.fn(),
+        release: jest.fn(),
+      };
+      pool.connect.mockResolvedValue(mockClient);
+
+      // Setup gameConfigService mocks for playKeno
+      gameConfigService.getKenoConfig.mockResolvedValue({
+        betAmount: 1,
+        maxPayout: 50,
+        feeBps: 1200,
+        poolBps: 8800,
+        minSpots: 1,
+        maxSpots: 10,
+        totalNumbers: 80,
+        drawnNumbers: 20,
+      });
+      gameConfigService.getSystemConfig.mockResolvedValue({});
+      gameConfigService.getConfigValue.mockResolvedValue(false); // commit-reveal disabled
+    });
+
+    function setupDbForPlay(balance = 100, sessionExists = true) {
+      const sessionRow = { id: 1, total_wagered: 0, total_won: 0, games_played: 0 };
+      if (sessionExists) {
+        mockClient.query
+          .mockResolvedValueOnce(null) // BEGIN
+          .mockResolvedValueOnce({ rows: [sessionRow] }) // SELECT session FOR UPDATE
+          .mockResolvedValueOnce({ rows: [{ balance }] }) // SELECT balance FOR UPDATE
+          .mockResolvedValueOnce({ rows: [{ daily_loss: 0 }] }) // loss limits (no-op when 0)
+          .mockResolvedValueOnce({ rows: [{ next_nonce: 0 }] }) // nonce
+          .mockResolvedValueOnce(null) // INSERT keno_games
+          .mockResolvedValueOnce(null) // UPDATE keno_sessions
+          .mockResolvedValueOnce(null) // INSERT keno_fees
+          .mockResolvedValueOnce(null) // UPDATE keno_pool
+          .mockResolvedValueOnce(null); // COMMIT
+      } else {
+        mockClient.query
+          .mockResolvedValueOnce(null) // BEGIN
+          .mockResolvedValueOnce({ rows: [] }) // no session
+          .mockResolvedValueOnce({ rows: [sessionRow] }) // INSERT session RETURNING
+          .mockResolvedValueOnce({ rows: [{ balance }] }) // SELECT balance
+          .mockResolvedValueOnce({ rows: [{ daily_loss: 0 }] }) // loss limits
+          .mockResolvedValueOnce({ rows: [{ next_nonce: 0 }] }) // nonce
+          .mockResolvedValueOnce(null) // INSERT keno_games
+          .mockResolvedValueOnce(null) // UPDATE keno_sessions
+          .mockResolvedValueOnce(null) // INSERT keno_fees
+          .mockResolvedValueOnce(null) // UPDATE keno_pool
+          .mockResolvedValueOnce(null); // COMMIT
+      }
+    }
+
+    it('returns game result with correct structure', async () => {
+      setupDbForPlay(100);
+
+      const result = await playKeno('0xABC123', [5, 10, 15], 1);
+
+      expect(result).toHaveProperty('gameId');
+      expect(result).toHaveProperty('selectedNumbers');
+      expect(result).toHaveProperty('drawnNumbers');
+      expect(result).toHaveProperty('matchedNumbers');
+      expect(result).toHaveProperty('spots', 3);
+      expect(result).toHaveProperty('hits');
+      expect(result).toHaveProperty('betAmount', 1);
+      expect(result).toHaveProperty('effectiveBet', 0.88);
+      expect(result).toHaveProperty('feeAmount', 0.12);
+      expect(result).toHaveProperty('provablyFair');
+      expect(result.provablyFair).toHaveProperty('serverSeed');
+      expect(result.provablyFair).toHaveProperty('nonce', 0);
+    });
+
+    it('lowercases wallet address', async () => {
+      setupDbForPlay(100);
+
+      await playKeno('0xABCDEF', [1, 2, 3], 1);
+
+      // First query after BEGIN should use lowercase wallet
+      const sessionQuery = mockClient.query.mock.calls[1];
+      expect(sessionQuery[1][0]).toBe('0xabcdef');
+    });
+
+    it('rejects fewer than minSpots numbers', async () => {
+      await expect(
+        playKeno('0xabc', [], 1)
+      ).rejects.toThrow('Selecciona al menos');
+    });
+
+    it('rejects more than maxSpots numbers', async () => {
+      await expect(
+        playKeno('0xabc', [1,2,3,4,5,6,7,8,9,10,11], 1)
+      ).rejects.toThrow('Maximo');
+    });
+
+    it('rejects numbers out of range', async () => {
+      await expect(
+        playKeno('0xabc', [0, 5, 10], 1)
+      ).rejects.toThrow('fuera de rango');
+    });
+
+    it('rejects duplicate numbers', async () => {
+      await expect(
+        playKeno('0xabc', [5, 5, 10], 1)
+      ).rejects.toThrow('unicos');
+    });
+
+    it('rejects non-integer numbers', async () => {
+      await expect(
+        playKeno('0xabc', [1.5, 2, 3], 1)
+      ).rejects.toThrow('entero');
+    });
+
+    it('rejects when balance is insufficient', async () => {
+      mockClient.query
+        .mockResolvedValueOnce(null) // BEGIN
+        .mockResolvedValueOnce({ rows: [{ id: 1, total_wagered: 0, total_won: 0 }] })
+        .mockResolvedValueOnce({ rows: [{ balance: 0.5 }] }); // not enough
+
+      await expect(
+        playKeno('0xabc', [1, 2, 3], 1)
+      ).rejects.toThrow('Balance insuficiente');
+      expect(mockClient.release).toHaveBeenCalled();
+    });
+
+    it('creates session if none exists', async () => {
+      setupDbForPlay(100, false);
+
+      const result = await playKeno('0xabc', [1, 2, 3], 1);
+      expect(result).toHaveProperty('gameId');
+    });
+
+    it('rolls back on error and releases client', async () => {
+      mockClient.query
+        .mockResolvedValueOnce(null) // BEGIN
+        .mockRejectedValueOnce(new Error('DB fail'));
+
+      await expect(
+        playKeno('0xabc', [1, 2, 3], 1)
+      ).rejects.toThrow('DB fail');
+
+      const rollback = mockClient.query.mock.calls.find(
+        c => c[0] === 'ROLLBACK'
+      );
+      expect(rollback).toBeDefined();
+      expect(mockClient.release).toHaveBeenCalled();
     });
   });
 });
