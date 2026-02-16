@@ -527,6 +527,102 @@ async function getVrfStats() {
   }
 }
 
+/**
+ * Create a seed commit for commit-reveal fairness
+ * Generates a server seed, stores its hash, returns commitId + seedHash for the player
+ * @param {string} walletAddress - Player wallet
+ * @returns {Object} { commitId, seedHash }
+ */
+async function createSeedCommit(walletAddress) {
+  const wallet = walletAddress.toLowerCase();
+
+  // Limit pending commits per wallet to prevent DoS
+  const MAX_PENDING_PER_WALLET = 5;
+  const pendingCount = await pool.query(
+    `SELECT COUNT(*) as cnt FROM keno_seed_commits WHERE wallet_address = $1 AND status = 'pending'`,
+    [wallet]
+  );
+  if (parseInt(pendingCount.rows[0].cnt) >= MAX_PENDING_PER_WALLET) {
+    throw new Error('Demasiados commits pendientes. Usa o espera que expiren.');
+  }
+
+  const serverSeed = generateServerSeed();
+  const seedHash = crypto.createHash('sha256').update(serverSeed).digest('hex');
+  const commitId = crypto.randomBytes(32).toString('hex');
+
+  await pool.query(
+    `INSERT INTO keno_seed_commits (commit_id, wallet_address, server_seed, seed_hash, status)
+     VALUES ($1, $2, $3, $4, 'pending')`,
+    [commitId, wallet, serverSeed, seedHash]
+  );
+
+  console.log(`[KenoVrfService] Seed commit created for ${wallet}: ${commitId}`);
+
+  return { commitId, seedHash };
+}
+
+/**
+ * Consume a seed commit during play
+ * Validates ownership, expiry (TTL), marks as used
+ * @param {string} commitId - The commit ID
+ * @param {string} walletAddress - Player wallet
+ * @param {Object} client - DB client (within transaction)
+ * @returns {Object} { server_seed, seed_hash }
+ */
+async function consumeSeedCommit(commitId, walletAddress, client) {
+  const wallet = walletAddress.toLowerCase();
+  const ttlSeconds = await gameConfigService.getConfigValue('keno_commit_ttl_seconds', 300);
+
+  const result = await client.query(
+    `UPDATE keno_seed_commits
+     SET status = 'used', used_at = NOW()
+     WHERE commit_id = $1
+       AND wallet_address = $2
+       AND status = 'pending'
+       AND created_at > NOW() - make_interval(secs => $3)
+     RETURNING server_seed, seed_hash`,
+    [commitId, wallet, ttlSeconds]
+  );
+
+  if (result.rows.length === 0) {
+    throw new Error('Commit no valido, expirado, o ya utilizado. Solicita un nuevo commit.');
+  }
+
+  return {
+    server_seed: result.rows[0].server_seed,
+    seed_hash: result.rows[0].seed_hash
+  };
+}
+
+/**
+ * Cleanup expired seed commits
+ * Called periodically by the scheduler
+ */
+async function cleanupExpiredCommits() {
+  try {
+    const ttlSeconds = await gameConfigService.getConfigValue('keno_commit_ttl_seconds', 300);
+    // Use 2x TTL for cleanup (consume rejects at 1x TTL, cleanup at 2x)
+    const cleanupSeconds = ttlSeconds * 2;
+    const result = await pool.query(
+      `UPDATE keno_seed_commits
+       SET status = 'expired'
+       WHERE status = 'pending'
+         AND created_at < NOW() - make_interval(secs => $1)
+       RETURNING commit_id`,
+      [cleanupSeconds]
+    );
+
+    if (result.rows.length > 0) {
+      console.log(`[KenoVrfService] Expired ${result.rows.length} seed commits`);
+    }
+
+    return { expired: result.rows.length };
+  } catch (err) {
+    console.error('[KenoVrfService] Error cleaning up expired commits:', err);
+    return { error: err.message };
+  }
+}
+
 module.exports = {
   // Seed generation
   generateServerSeed,
@@ -541,6 +637,14 @@ module.exports = {
   createVrfBatch,
   requestVrfForBatch,
   processVrfCallback,
+
+  // Commit-reveal
+  createSeedCommit,
+  consumeSeedCommit,
+  cleanupExpiredCommits,
+
+  // Contract init (for external use)
+  initVrfContract,
 
   // Stats
   getVrfStats,

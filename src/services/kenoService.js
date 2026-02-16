@@ -56,6 +56,49 @@ const PAYOUT_TABLE = {
 // No interactúa con el smart contract directamente
 
 /**
+ * Check loss limits for responsible gaming
+ * @param {Object} client - DB client (within transaction)
+ * @param {string} wallet - Wallet address (lowercase)
+ * @param {Object} session - Active session row
+ * @throws {Error} if any limit is reached
+ */
+async function checkLossLimits(client, wallet, session) {
+  const limits = await gameConfigService.getLossLimitConfig();
+
+  // Daily loss limit (0 = disabled)
+  if (limits.dailyLossLimit > 0) {
+    const dailyResult = await client.query(
+      `SELECT COALESCE(SUM(ABS(net_result)), 0) as daily_loss
+       FROM keno_games
+       WHERE wallet_address = $1
+         AND net_result < 0
+         AND timestamp >= CURRENT_DATE`,
+      [wallet]
+    );
+    const dailyLoss = parseFloat(dailyResult.rows[0].daily_loss) || 0;
+    if (dailyLoss >= limits.dailyLossLimit) {
+      throw new Error(`Limite de perdida diaria alcanzado ($${dailyLoss.toFixed(2)} / $${limits.dailyLossLimit}). Intenta manana.`);
+    }
+  }
+
+  // Session loss limit (0 = disabled)
+  if (limits.sessionLossLimit > 0 && session) {
+    const sessionLoss = parseFloat(session.total_wagered || 0) - parseFloat(session.total_won || 0);
+    if (sessionLoss >= limits.sessionLossLimit) {
+      throw new Error(`Limite de perdida de sesion alcanzado ($${sessionLoss.toFixed(2)} / $${limits.sessionLossLimit}). Cierra sesion para continuar.`);
+    }
+  }
+
+  // Max games per session (0 = disabled)
+  if (limits.maxGamesPerSession > 0 && session) {
+    const gamesPlayed = parseInt(session.games_played || 0);
+    if (gamesPlayed >= limits.maxGamesPerSession) {
+      throw new Error(`Maximo de juegos por sesion alcanzado (${gamesPlayed} / ${limits.maxGamesPerSession}). Cierra sesion para continuar.`);
+    }
+  }
+}
+
+/**
  * Generar numeros aleatorios verificables
  * Usa crypto para generar numeros seguros
  */
@@ -120,7 +163,7 @@ async function getTotalBalance(walletAddress) {
  * - Fee 12% solo sobre perdidas
  * - Validacion de solvencia del contrato
  */
-async function playKeno(walletAddress, selectedNumbers, betAmount) {
+async function playKeno(walletAddress, selectedNumbers, betAmount, commitId = null, clientSeedInput = '') {
   const wallet = walletAddress.toLowerCase();
 
   // Obtener configuracion dinamica desde BD
@@ -160,11 +203,15 @@ async function playKeno(walletAddress, selectedNumbers, betAmount) {
 
   // Generar seeds para Provably Fair + VRF
   const timestamp = Date.now();
-  const serverSeed = kenoVrfService.generateServerSeed();
-  const clientSeed = ''; // Puede ser proporcionado por el usuario en futuro
+  let serverSeed;
+  let seedHash = null;
+  let usedCommitId = null;
+  // Accept user-provided clientSeed for Provably Fair (sanitize to string, max 64 chars)
+  const clientSeed = typeof clientSeedInput === 'string' ? clientSeedInput.slice(0, 64) : '';
 
-  // Registrar en base de datos con transaccion y bloqueo atomico
-  const gameId = `KENO-${timestamp}-${wallet.substring(2, 8)}`;
+  // Collision-safe game ID using crypto random
+  const randomSuffix = crypto.randomBytes(4).toString('hex');
+  const gameId = `KENO-${timestamp}-${randomSuffix}`;
 
   const client = await pool.connect();
   try {
@@ -216,8 +263,25 @@ async function playKeno(walletAddress, selectedNumbers, betAmount) {
     const effectiveBalance = userBalance + sessionNet;
 
     if (bet > effectiveBalance) {
-      await client.query('ROLLBACK');
       throw new Error(`Balance insuficiente. Tienes: $${effectiveBalance.toFixed(2)} USDT`);
+    }
+
+    // Check loss limits (responsible gaming)
+    await checkLossLimits(client, wallet, session);
+
+    // Commit-reveal: determine serverSeed source
+    const commitRevealEnabled = await gameConfigService.getConfigValue('keno_commit_reveal_enabled', false);
+    if (commitRevealEnabled) {
+      if (!commitId) {
+        throw new Error('Commit-reveal habilitado. Llama POST /api/keno/commit primero y envia commitId.');
+      }
+      const commitData = await kenoVrfService.consumeSeedCommit(commitId, wallet, client);
+      serverSeed = commitData.server_seed;
+      seedHash = commitData.seed_hash;
+      usedCommitId = commitId;
+    } else {
+      // Legacy flow: generate seed on-the-fly
+      serverSeed = kenoVrfService.generateServerSeed();
     }
 
     // Get nonce within transaction to prevent duplicates
@@ -261,8 +325,9 @@ async function playKeno(walletAddress, selectedNumbers, betAmount) {
         game_id, wallet_address, selected_numbers, drawn_numbers, matched_numbers,
         spots, hits, bet_amount, multiplier, payout, net_result,
         seed, timestamp, settled, session_id,
-        server_seed, client_seed, nonce, vrf_verified
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, false, $14, $15, $16, $17, false)`,
+        server_seed, client_seed, nonce, vrf_verified,
+        seed_hash, commit_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, false, $14, $15, $16, $17, false, $18, $19)`,
       [
         gameId, wallet,
         JSON.stringify(selectedNumbers),
@@ -270,7 +335,8 @@ async function playKeno(walletAddress, selectedNumbers, betAmount) {
         JSON.stringify(matchedNumbers),
         spots, hits, bet, rawMultiplier, payout, netResult,
         seed, new Date(timestamp), session.id,
-        serverSeed, clientSeed, nonce
+        serverSeed, clientSeed, nonce,
+        seedHash, usedCommitId
       ]
     );
 
@@ -347,7 +413,7 @@ async function playKeno(walletAddress, selectedNumbers, betAmount) {
       capped,
       maxPayout: config.maxPayout,
       netResult,
-      isWin: payout > 0,
+      isWin: netResult > 0,
       seed,
       timestamp,
       // VRF data for Provably Fair verification
@@ -356,6 +422,8 @@ async function playKeno(walletAddress, selectedNumbers, betAmount) {
         clientSeed,
         nonce,
         combinedSeed: seed,
+        seedHash,
+        commitId: usedCommitId,
         vrfVerified: false
       }
     };
@@ -394,7 +462,7 @@ async function getGameHistory(walletAddress, limit = 20) {
     multiplier: parseFloat(row.multiplier),
     payout: parseFloat(row.payout),
     netResult: parseFloat(row.net_result),
-    isWin: parseFloat(row.payout) > 0,
+    isWin: parseFloat(row.net_result) > 0,
     timestamp: row.timestamp,
     settled: row.settled
   }));

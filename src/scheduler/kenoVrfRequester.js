@@ -117,8 +117,27 @@ async function checkCompletedVrfRequests() {
 
     for (const batch of requestedResult.rows) {
       try {
-        // En produccion, consultar el contrato
-        // Por ahora, simular verificacion local despues de 1 minuto
+        // Try on-chain fulfillment check first
+        const vrfContract = kenoVrfService.initVrfContract();
+        if (vrfContract && batch.vrf_request_id) {
+          try {
+            const reqData = await vrfContract.getKenoVrfRequest(batch.vrf_request_id);
+            if (reqData.fulfilled) {
+              // VRF fulfilled on-chain — use real random word
+              const randomWord = reqData.randomWord.toString();
+              const result = await kenoVrfService.processVrfCallback(
+                batch.vrf_request_id,
+                randomWord
+              );
+              results.push({ batchId: batch.id, ...result, onChain: true });
+              continue;
+            }
+          } catch (chainErr) {
+            console.warn(`[KenoVrfRequester] On-chain VRF check failed for batch #${batch.id}:`, chainErr.message);
+          }
+        }
+
+        // Fallback: simular verificacion local despues de 1 minuto
         const batchAge = await pool.query(
           `SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) as age_seconds
            FROM keno_vrf_batches WHERE id = $1`,
@@ -127,7 +146,6 @@ async function checkCompletedVrfRequests() {
 
         const ageSeconds = batchAge.rows[0]?.age_seconds || 0;
 
-        // Simular callback despues de 60 segundos
         if (ageSeconds > 60) {
           const simulatedRandomWord = require('crypto').randomBytes(32).toString('hex');
           const result = await kenoVrfService.processVrfCallback(
@@ -137,7 +155,8 @@ async function checkCompletedVrfRequests() {
 
           results.push({
             batchId: batch.id,
-            ...result
+            ...result,
+            simulated: true
           });
         }
       } catch (err) {
@@ -218,6 +237,9 @@ async function runVrfTasks() {
 
     // 4. Limpiar batches fallidos
     results.cleanup = await cleanupFailedBatches();
+
+    // 5. Cleanup expired seed commits (commit-reveal)
+    results.commitCleanup = await kenoVrfService.cleanupExpiredCommits();
 
   } catch (error) {
     console.error('[KenoVrfRequester] Error running VRF tasks:', error);

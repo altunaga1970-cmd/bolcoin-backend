@@ -9,20 +9,38 @@
 
 const pool = require('../db');
 const ethers = require('ethers');
+const crypto = require('crypto');
+const gameConfigService = require('./gameConfigService');
 
 // Configuración del contrato
 const RPC_URL = process.env.RPC_URL || 'http://127.0.0.1:8545';
-const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
+const CONTRACT_ADDRESS = process.env.KENO_CONTRACT_ADDRESS || process.env.CONTRACT_ADDRESS;
 const OPERATOR_PRIVATE_KEY = process.env.OPERATOR_PRIVATE_KEY;
 
-// ABI para liquidación
+// ABI para liquidación (Phase 3: 5 parameters with sessionId + signature)
 const SETTLEMENT_ABI = [
-  "function settleKenoSession(address _user, uint256 _netAmount, bool _isProfit) external",
+  "function settleKenoSession(address _user, uint256 _netAmount, bool _isProfit, bytes32 _sessionId, bytes _signature) external",
   "function adminDeposit(address _user, uint256 _amount) external",
   "function adminWithdraw(address _user, uint256 _amount) external",
   "function getBalance(address _user) view returns (uint256)",
   "function userBalances(address) view returns (uint256)"
 ];
+
+// EIP-712 Domain and Types for settlement signing
+const EIP712_DOMAIN_NAME = 'KenoGame';
+const EIP712_DOMAIN_VERSION = '1';
+const EIP712_TYPES = {
+  SettleKenoSession: [
+    { name: 'user', type: 'address' },
+    { name: 'netAmount', type: 'uint256' },
+    { name: 'isProfit', type: 'bool' },
+    { name: 'sessionId', type: 'bytes32' },
+    { name: 'deadline', type: 'uint256' }
+  ]
+};
+
+// Settlement signature validity period (1 hour)
+const SETTLEMENT_DEADLINE_SECONDS = 3600;
 
 let provider = null;
 let contract = null;
@@ -47,6 +65,44 @@ function initContract() {
     }
   }
   return contract;
+}
+
+/**
+ * Sign a settlement with EIP-712 using the operator wallet
+ * @param {string} userAddress - Player wallet address
+ * @param {BigInt} netAmountWei - Net amount in wei (USDT 6 decimals)
+ * @param {boolean} isProfit - True if player profited
+ * @param {string} sessionIdBytes32 - Session ID as bytes32
+ * @param {BigInt} deadline - Unix timestamp deadline
+ * @returns {string} EIP-712 signature
+ */
+async function signSettlement(userAddress, netAmountWei, isProfit, sessionIdBytes32, deadline) {
+  if (!signer) {
+    initContract();
+  }
+  if (!signer) {
+    throw new Error('Operator signer not available for EIP-712 signing');
+  }
+
+  const { chainId } = await provider.getNetwork();
+
+  const domain = {
+    name: EIP712_DOMAIN_NAME,
+    version: EIP712_DOMAIN_VERSION,
+    chainId: chainId,
+    verifyingContract: CONTRACT_ADDRESS
+  };
+
+  const value = {
+    user: userAddress,
+    netAmount: netAmountWei,
+    isProfit: isProfit,
+    sessionId: sessionIdBytes32,
+    deadline: deadline
+  };
+
+  const signature = await signer.signTypedData(domain, EIP712_TYPES, value);
+  return signature;
 }
 
 /**
@@ -199,25 +255,75 @@ async function settleSession(walletAddress) {
       return { success: true, message: 'Empty session closed', netResult: 0 };
     }
 
-    // MVP: On-chain settlement disabled (contract ABI mismatch - Phase 2 not ready)
-    // Session settlement is DB-only for now. On-chain reconciliation will be added in Phase 2.
     let txHash = null;
+    const settlementEnabled = await gameConfigService.getConfigValue('keno_settlement_enabled', false);
 
     if (netResult !== 0) {
-      console.log(`[KenoSessionService] Settling session for ${wallet}: ${netResult > 0 ? '+' : ''}${netResult.toFixed(2)} USDT (DB-only, on-chain Phase 2)`);
-
-      // Update user balance in DB to reflect session result
+      // Always update DB balance
       if (netResult > 0) {
         await client.query(
           'UPDATE users SET balance = balance + $1, updated_at = NOW() WHERE wallet_address = $2',
           [netResult, wallet]
         );
       } else {
-        // Loss: ensure balance doesn't go below 0
         await client.query(
           'UPDATE users SET balance = GREATEST(0, balance + $1), updated_at = NOW() WHERE wallet_address = $2',
           [netResult, wallet]
         );
+      }
+
+      // On-chain settlement (Phase 3)
+      if (settlementEnabled && CONTRACT_ADDRESS) {
+        try {
+          initContract();
+          if (contract && signer) {
+            const absAmount = Math.abs(netResult);
+            const isProfit = netResult > 0;
+            const netAmountWei = ethers.parseUnits(absAmount.toFixed(6), 6);
+
+            // Generate bytes32 sessionId from DB session id
+            const sessionIdHex = ethers.zeroPadValue(
+              ethers.toBeHex(session.id),
+              32
+            );
+
+            // Deadline: current time + 1 hour
+            const deadline = BigInt(Math.floor(Date.now() / 1000) + SETTLEMENT_DEADLINE_SECONDS);
+
+            // Sign with EIP-712 (includes deadline)
+            const signature = await signSettlement(wallet, netAmountWei, isProfit, sessionIdHex, deadline);
+
+            // Call contract with 5 params
+            const tx = await contract.settleKenoSession(
+              wallet,
+              netAmountWei,
+              isProfit,
+              sessionIdHex,
+              signature
+            );
+            const receipt = await tx.wait();
+            txHash = receipt.hash;
+
+            console.log(`[KenoSessionService] On-chain settlement for ${wallet}: ${isProfit ? '+' : '-'}${absAmount.toFixed(2)} USDT, tx: ${txHash}`);
+          }
+        } catch (chainErr) {
+          console.error(`[KenoSessionService] On-chain settlement failed for ${wallet}, DB updated but chain diverged:`, chainErr.message);
+          // Mark as settlement_failed (not settled) so reconciliation can retry
+          await client.query(
+            `UPDATE keno_sessions SET status = 'settlement_failed', settlement_error = $1 WHERE id = $2`,
+            [`on-chain failed: ${chainErr.message}`, session.id]
+          );
+          await client.query('COMMIT');
+          return {
+            success: false,
+            sessionId: session.id,
+            netResult,
+            error: 'On-chain settlement failed. DB updated. Reconciliation pending.',
+            txHash: null
+          };
+        }
+      } else {
+        console.log(`[KenoSessionService] Settling session for ${wallet}: ${netResult > 0 ? '+' : ''}${netResult.toFixed(2)} USDT (DB-only)`);
       }
     }
 

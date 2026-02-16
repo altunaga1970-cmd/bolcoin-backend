@@ -12,17 +12,33 @@ const kenoService = require('../services/kenoService');
 const kenoSessionService = require('../services/kenoSessionService');
 const kenoVrfService = require('../services/kenoVrfService');
 const kenoPoolHealthService = require('../services/kenoPoolHealthService');
+const gameConfigService = require('../services/gameConfigService');
 const { authenticateWallet } = require('../middleware/web3Auth');
 const { authenticate, requireAdmin } = require('../middleware/auth');
 const { requireFlag } = require('../middleware/featureFlag');
+
+// On-chain mode: when KENO_CONTRACT_ADDRESS is set, /play is disabled (use contract directly)
+const KENO_ON_CHAIN = !!process.env.KENO_CONTRACT_ADDRESS;
+
+// Rate limiting for commit endpoint: 15 commits per minute per wallet
+const commitLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 15,
+  keyGenerator: (req) => req.user?.address || req.headers['x-wallet-address'] || 'anonymous',
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
+  message: { success: false, message: 'Demasiados commits. Espera un momento.' }
+});
 
 // Rate limiting for play endpoint: 10 plays per minute per IP
 const playLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
-  keyGenerator: (req) => req.user?.address || req.ip,
+  keyGenerator: (req) => req.user?.address || req.headers['x-wallet-address'] || 'anonymous',
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
   message: { success: false, message: 'Demasiadas jugadas. Espera un momento.' }
 });
 
@@ -64,6 +80,20 @@ router.get('/balance', requireFlag('game_keno'), authenticateWallet, async (req,
     const walletAddress = req.user.address;
     const balances = await kenoService.getTotalBalance(walletAddress);
 
+    // If on-chain, also return contract pool info
+    if (KENO_ON_CHAIN) {
+      try {
+        const { getKenoContractReadOnly } = require('../chain/kenoProvider');
+        const kenoContract = getKenoContractReadOnly();
+        const ethers = require('ethers');
+        const pool = await kenoContract.availablePool();
+        balances.onChainPool = ethers.formatUnits(pool, 6);
+        balances.onChain = true;
+      } catch (chainErr) {
+        console.warn('[Keno] Could not read on-chain pool:', chainErr.message);
+      }
+    }
+
     res.json({
       success: true,
       data: balances
@@ -78,16 +108,123 @@ router.get('/balance', requireFlag('game_keno'), authenticateWallet, async (req,
 });
 
 /**
+ * GET /api/keno/limits
+ * Get loss limits config + current usage for authenticated user
+ */
+router.get('/limits', requireFlag('game_keno'), authenticateWallet, async (req, res) => {
+  try {
+    const walletAddress = req.user.address;
+    const wallet = walletAddress.toLowerCase();
+    const limits = await gameConfigService.getLossLimitConfig();
+
+    const dbPool = require('../db');
+
+    // Daily loss
+    const dailyResult = await dbPool.query(
+      `SELECT COALESCE(SUM(ABS(net_result)), 0) as daily_loss
+       FROM keno_games
+       WHERE wallet_address = $1
+         AND net_result < 0
+         AND timestamp >= CURRENT_DATE`,
+      [wallet]
+    );
+    const dailyLossUsed = parseFloat(dailyResult.rows[0].daily_loss) || 0;
+
+    // Session info
+    const sessionResult = await dbPool.query(
+      `SELECT total_wagered, total_won, games_played
+       FROM keno_sessions
+       WHERE wallet_address = $1 AND status = 'active'`,
+      [wallet]
+    );
+    const session = sessionResult.rows[0];
+    const sessionLossUsed = session
+      ? parseFloat(session.total_wagered || 0) - parseFloat(session.total_won || 0)
+      : 0;
+    const gamesPlayed = session ? parseInt(session.games_played || 0) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        daily: {
+          limit: limits.dailyLossLimit,
+          used: dailyLossUsed,
+          remaining: limits.dailyLossLimit > 0 ? Math.max(0, limits.dailyLossLimit - dailyLossUsed) : null
+        },
+        session: {
+          limit: limits.sessionLossLimit,
+          used: Math.max(0, sessionLossUsed),
+          remaining: limits.sessionLossLimit > 0 ? Math.max(0, limits.sessionLossLimit - sessionLossUsed) : null
+        },
+        games: {
+          limit: limits.maxGamesPerSession,
+          used: gamesPlayed,
+          remaining: limits.maxGamesPerSession > 0 ? Math.max(0, limits.maxGamesPerSession - gamesPlayed) : null
+        }
+      }
+    });
+  } catch (err) {
+    console.error('[Keno] Error getting limits:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Error al obtener limites'
+    });
+  }
+});
+
+/**
+ * POST /api/keno/commit
+ * Create a seed commit for commit-reveal fairness
+ * Returns { commitId, seedHash } for the player to verify after the game
+ */
+router.post('/commit', requireFlag('game_keno'), authenticateWallet, commitLimiter, async (req, res) => {
+  try {
+    const commitRevealEnabled = await gameConfigService.getConfigValue('keno_commit_reveal_enabled', false);
+    if (!commitRevealEnabled) {
+      return res.status(400).json({
+        success: false,
+        message: 'Commit-reveal no esta habilitado'
+      });
+    }
+
+    const walletAddress = req.user.address;
+    const result = await kenoVrfService.createSeedCommit(walletAddress);
+
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (err) {
+    console.error('[Keno] Error creating seed commit:', err);
+    res.status(500).json({
+      success: false,
+      message: err.message || 'Error al crear commit'
+    });
+  }
+});
+
+/**
  * POST /api/keno/play
  * Jugar una partida de Keno
  *
- * Body: { numbers: [1, 5, 10, ...] }
+ * Body: { numbers: [1, 5, 10, ...], amount, commitId? }
  * MVP: amount es ignorado (siempre 1 USDT)
+ * Phase 3: commitId enables commit-reveal flow
  */
 router.post('/play', requireFlag('game_keno'), authenticateWallet, playLimiter, async (req, res) => {
+  // On-chain mode: reject off-chain play — user must call contract directly
+  if (KENO_ON_CHAIN) {
+    return res.status(400).json({
+      success: false,
+      message: 'Keno is in on-chain mode. Use the KenoGame contract placeBet() function directly.',
+      onChain: true,
+      contractAddress: process.env.KENO_CONTRACT_ADDRESS
+    });
+  }
+
   try {
     const walletAddress = req.user.address;
-    const { numbers, amount } = req.body;
+    const { numbers, amount, commitId, clientSeed } = req.body;
 
     if (!numbers || !Array.isArray(numbers)) {
       return res.status(400).json({
@@ -103,8 +240,8 @@ router.post('/play', requireFlag('game_keno'), authenticateWallet, playLimiter, 
       });
     }
 
-    // Jugar
-    const result = await kenoService.playKeno(walletAddress, numbers, amount);
+    // Jugar (commitId + clientSeed are optional, used for commit-reveal / provably fair)
+    const result = await kenoService.playKeno(walletAddress, numbers, amount, commitId, clientSeed);
 
     res.json({
       success: true,
@@ -438,6 +575,35 @@ router.get('/admin/vrf/stats', authenticate, requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error al obtener estadisticas VRF'
+    });
+  }
+});
+
+/**
+ * POST /api/keno/admin/vrf/toggle
+ * Toggle VRF verification on/off (admin)
+ */
+router.post('/admin/vrf/toggle', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { enabled } = req.body;
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        message: 'enabled (boolean) requerido'
+      });
+    }
+
+    await gameConfigService.setConfigValue('keno_vrf_enabled', enabled, 'boolean');
+
+    res.json({
+      success: true,
+      data: { keno_vrf_enabled: enabled }
+    });
+  } catch (err) {
+    console.error('[Keno] Error toggling VRF:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Error al cambiar estado VRF'
     });
   }
 });

@@ -48,6 +48,14 @@ const MVP_DEFAULTS = {
   // Keno Pool Health
   keno_pool_warning_threshold: 0.30,  // Warning cuando pool < 30% del minimo
   keno_pool_critical_threshold: 0.15, // Critical cuando pool < 15% del minimo
+  // Keno Loss Limits (0 = disabled)
+  keno_daily_loss_limit: 100,
+  keno_session_loss_limit: 50,
+  keno_max_games_per_session: 200,
+  // Keno Phase 3 Feature Flags
+  keno_commit_reveal_enabled: false,
+  keno_settlement_enabled: false,
+  keno_commit_ttl_seconds: 300,
   // Sistema
   contract_min_balance: 100,
   rng_method: 'sha256_server_seed'
@@ -295,12 +303,14 @@ async function setConfigValue(key, value, valueType = 'string') {
  * @returns {Object} { fee, reserve, total }
  */
 function calculateLossDistribution(loss, feeBps = 1200, poolBps = 8800) {
-  const fee = (loss * feeBps) / 10000;
-  const reserve = (loss * poolBps) / 10000;
+  // Round fee DOWN (truncate) — remainder goes to pool
+  const fee = Math.floor((loss * feeBps) / 10000 * 1000000) / 1000000;
+  // Reserve = total loss - fee (captures the rounding remainder)
+  const reserve = Math.round((loss - fee) * 1000000) / 1000000;
 
   return {
-    fee: Math.round(fee * 1000000) / 1000000,      // 6 decimales
-    reserve: Math.round(reserve * 1000000) / 1000000,
+    fee,
+    reserve,
     total: loss
   };
 }
@@ -372,6 +382,19 @@ async function getPublicConfig() {
   };
 }
 
+/**
+ * Get loss limit configuration
+ * Values of 0 mean no limit (backward compatible)
+ */
+async function getLossLimitConfig() {
+  const config = await getAllConfig();
+  return {
+    dailyLossLimit: config.keno_daily_loss_limit ?? MVP_DEFAULTS.keno_daily_loss_limit,
+    sessionLossLimit: config.keno_session_loss_limit ?? MVP_DEFAULTS.keno_session_loss_limit,
+    maxGamesPerSession: config.keno_max_games_per_session ?? MVP_DEFAULTS.keno_max_games_per_session
+  };
+}
+
 module.exports = {
   getAllConfig,
   getConfigValue,
@@ -389,5 +412,7 @@ module.exports = {
   calculateCappedPayout,
   shouldChargeFee,
   invalidateCache,
+  // Loss limits
+  getLossLimitConfig,
   MVP_DEFAULTS
 };
