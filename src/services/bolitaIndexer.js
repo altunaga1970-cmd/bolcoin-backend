@@ -1,0 +1,397 @@
+/**
+ * La Bolita Event Indexer
+ *
+ * Listens to LaBolitaGame.sol contract events and indexes them in PostgreSQL
+ * for fast API queries and admin dashboard.
+ *
+ * Events indexed:
+ *   - BetPlaced → bets table
+ *   - DrawCreated/Opened/Closed → draws table
+ *   - DrawResolved → draws table + bet payouts
+ *   - DrawCancelled → draws table + refunds
+ *   - BetPaid/BetUnpaid/BetRefunded → bets table
+ */
+
+const { ethers } = require('ethers');
+const { getClient, query } = require('../config/database');
+
+const ABI = [
+  'event DrawCreated(uint256 indexed drawId, string drawNumber, uint64 scheduledTime)',
+  'event DrawOpened(uint256 indexed drawId)',
+  'event DrawClosed(uint256 indexed drawId)',
+  'event DrawResolved(uint256 indexed drawId, uint16 winningNumber, uint256 totalPaidOut)',
+  'event DrawCancelled(uint256 indexed drawId, uint256 refundedAmount)',
+  'event BetPlaced(uint256 indexed drawId, uint256 betIndex, address indexed user, uint8 betType, uint16 betNumber, uint256 amount)',
+  'event BetPaid(uint256 indexed drawId, uint256 betIndex, address indexed user, uint256 payout)',
+  'event BetUnpaid(uint256 indexed drawId, uint256 betIndex, uint256 payoutNeeded, uint256 poolAvailable)',
+  'event BetRefunded(uint256 indexed drawId, uint256 betIndex, address indexed user, uint256 amount)',
+  'event WinningNumberSet(uint256 indexed drawId, uint16 winningNumber)'
+];
+
+const TOKEN_DECIMALS = 6;
+const BET_TYPES = ['fijos', 'centenas', 'parles'];
+const DRAW_STATUSES = ['created', 'open', 'closed', 'vrf_pending', 'vrf_fulfilled', 'resolved', 'cancelled'];
+
+class BolitaIndexer {
+  constructor() {
+    this.contract = null;
+    this.provider = null;
+    this.isRunning = false;
+    this.listeners = [];
+  }
+
+  /**
+   * Initialize the indexer
+   */
+  async init() {
+    const contractAddress = process.env.BOLITA_CONTRACT_ADDRESS;
+    const rpcUrl = process.env.POLYGON_RPC_URL || process.env.RPC_URL;
+
+    if (!contractAddress || !rpcUrl) {
+      console.log('[BolitaIndexer] Missing BOLITA_CONTRACT_ADDRESS or RPC_URL, skipping initialization');
+      return false;
+    }
+
+    try {
+      this.provider = new ethers.JsonRpcProvider(rpcUrl);
+      this.contract = new ethers.Contract(contractAddress, ABI, this.provider);
+      console.log(`[BolitaIndexer] Initialized for contract ${contractAddress}`);
+      return true;
+    } catch (error) {
+      console.error('[BolitaIndexer] Failed to initialize:', error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Start listening to events
+   */
+  async start() {
+    if (!this.contract) {
+      const ok = await this.init();
+      if (!ok) return;
+    }
+
+    if (this.isRunning) return;
+    this.isRunning = true;
+
+    console.log('[BolitaIndexer] Starting event listeners...');
+
+    // DrawCreated
+    this.contract.on('DrawCreated', async (drawId, drawNumber, scheduledTime) => {
+      try {
+        await this._indexDrawCreated(drawId, drawNumber, scheduledTime);
+      } catch (err) {
+        console.error('[BolitaIndexer] Error indexing DrawCreated:', err.message);
+      }
+    });
+
+    // DrawOpened
+    this.contract.on('DrawOpened', async (drawId) => {
+      try {
+        await this._updateDrawStatus(drawId, 'open');
+      } catch (err) {
+        console.error('[BolitaIndexer] Error indexing DrawOpened:', err.message);
+      }
+    });
+
+    // DrawClosed
+    this.contract.on('DrawClosed', async (drawId) => {
+      try {
+        await this._updateDrawStatus(drawId, 'closed');
+      } catch (err) {
+        console.error('[BolitaIndexer] Error indexing DrawClosed:', err.message);
+      }
+    });
+
+    // WinningNumberSet
+    this.contract.on('WinningNumberSet', async (drawId, winningNumber) => {
+      try {
+        await this._indexWinningNumber(drawId, winningNumber);
+      } catch (err) {
+        console.error('[BolitaIndexer] Error indexing WinningNumberSet:', err.message);
+      }
+    });
+
+    // DrawResolved
+    this.contract.on('DrawResolved', async (drawId, winningNumber, totalPaidOut) => {
+      try {
+        await this._indexDrawResolved(drawId, winningNumber, totalPaidOut);
+      } catch (err) {
+        console.error('[BolitaIndexer] Error indexing DrawResolved:', err.message);
+      }
+    });
+
+    // DrawCancelled
+    this.contract.on('DrawCancelled', async (drawId, refundedAmount) => {
+      try {
+        await this._indexDrawCancelled(drawId, refundedAmount);
+      } catch (err) {
+        console.error('[BolitaIndexer] Error indexing DrawCancelled:', err.message);
+      }
+    });
+
+    // BetPlaced
+    this.contract.on('BetPlaced', async (drawId, betIndex, user, betType, betNumber, amount) => {
+      try {
+        await this._indexBetPlaced(drawId, betIndex, user, betType, betNumber, amount);
+      } catch (err) {
+        console.error('[BolitaIndexer] Error indexing BetPlaced:', err.message);
+      }
+    });
+
+    // BetPaid
+    this.contract.on('BetPaid', async (drawId, betIndex, user, payout) => {
+      try {
+        await this._indexBetPaid(drawId, betIndex, user, payout);
+      } catch (err) {
+        console.error('[BolitaIndexer] Error indexing BetPaid:', err.message);
+      }
+    });
+
+    // BetRefunded
+    this.contract.on('BetRefunded', async (drawId, betIndex, user, amount) => {
+      try {
+        await this._indexBetRefunded(drawId, betIndex, user, amount);
+      } catch (err) {
+        console.error('[BolitaIndexer] Error indexing BetRefunded:', err.message);
+      }
+    });
+
+    console.log('[BolitaIndexer] Event listeners active');
+  }
+
+  /**
+   * Stop listening
+   */
+  stop() {
+    if (this.contract) {
+      this.contract.removeAllListeners();
+    }
+    this.isRunning = false;
+    console.log('[BolitaIndexer] Stopped');
+  }
+
+  // ── Internal indexing methods ──
+
+  async _indexDrawCreated(drawId, drawNumber, scheduledTime) {
+    const id = Number(drawId);
+    const time = new Date(Number(scheduledTime) * 1000);
+
+    await query(`
+      INSERT INTO draws (id, draw_number, scheduled_time, status, created_at, updated_at)
+      VALUES ($1, $2, $3, 'scheduled', NOW(), NOW())
+      ON CONFLICT (id) DO UPDATE SET
+        draw_number = $2,
+        scheduled_time = $3,
+        updated_at = NOW()
+    `, [id, drawNumber, time]);
+
+    console.log(`[BolitaIndexer] DrawCreated #${id}: ${drawNumber} at ${time.toISOString()}`);
+  }
+
+  async _updateDrawStatus(drawId, status) {
+    const id = Number(drawId);
+    await query(`
+      UPDATE draws SET status = $1, updated_at = NOW()
+      WHERE id = $2
+    `, [status, id]);
+
+    console.log(`[BolitaIndexer] Draw #${id} status -> ${status}`);
+  }
+
+  async _indexWinningNumber(drawId, winningNumber) {
+    const id = Number(drawId);
+    const win = Number(winningNumber);
+    const fijo = String(win % 100).padStart(2, '0');
+    const centena = String(win % 1000).padStart(3, '0');
+    const parle = String(win).padStart(4, '0');
+
+    await query(`
+      UPDATE draws SET
+        winning_fijos = $1,
+        winning_centenas = $2,
+        winning_parles = $3,
+        updated_at = NOW()
+      WHERE id = $4
+    `, [fijo, centena, parle, id]);
+
+    console.log(`[BolitaIndexer] Draw #${id} winning number: ${parle} (fijo=${fijo}, centena=${centena})`);
+  }
+
+  async _indexDrawResolved(drawId, winningNumber, totalPaidOut) {
+    const id = Number(drawId);
+    const paidOut = parseFloat(ethers.formatUnits(totalPaidOut, TOKEN_DECIMALS));
+
+    await query(`
+      UPDATE draws SET
+        status = 'completed',
+        total_paid_out = $1,
+        completed_at = NOW(),
+        updated_at = NOW()
+      WHERE id = $2
+    `, [paidOut, id]);
+
+    console.log(`[BolitaIndexer] DrawResolved #${id}: paid out ${paidOut} USDT`);
+  }
+
+  async _indexDrawCancelled(drawId, refundedAmount) {
+    const id = Number(drawId);
+    const refunded = parseFloat(ethers.formatUnits(refundedAmount, TOKEN_DECIMALS));
+
+    await query(`
+      UPDATE draws SET status = 'cancelled', updated_at = NOW()
+      WHERE id = $1
+    `, [id]);
+
+    // Mark all pending bets as refunded
+    await query(`
+      UPDATE bets SET status = 'refunded', updated_at = NOW()
+      WHERE draw_id = $1 AND status = 'pending'
+    `, [id]);
+
+    console.log(`[BolitaIndexer] DrawCancelled #${id}: refunded ${refunded} USDT`);
+  }
+
+  async _indexBetPlaced(drawId, betIndex, user, betType, betNumber, amount) {
+    const drawIdNum = Number(drawId);
+    const betIndexNum = Number(betIndex);
+    const gameType = BET_TYPES[Number(betType)] || 'fijos';
+    const number = String(Number(betNumber)).padStart(
+      gameType === 'fijos' ? 2 : gameType === 'centenas' ? 3 : 4,
+      '0'
+    );
+    const amountUsdt = parseFloat(ethers.formatUnits(amount, TOKEN_DECIMALS));
+    const userAddr = user.toLowerCase();
+
+    // Look up user ID
+    const userResult = await query(
+      'SELECT id FROM users WHERE wallet_address = $1',
+      [userAddr]
+    );
+    const userId = userResult.rows[0]?.id;
+
+    if (!userId) {
+      console.warn(`[BolitaIndexer] Unknown user ${userAddr}, skipping bet index`);
+      return;
+    }
+
+    // Calculate potential payout
+    const multipliers = { fijos: 65, centenas: 300, parles: 1000 };
+    const multiplier = multipliers[gameType] || 65;
+    const potentialPayout = Math.round(amountUsdt * multiplier * 100) / 100;
+
+    await query(`
+      INSERT INTO bets (
+        user_id, draw_id, game_type, bet_number, amount,
+        potential_payout, multiplier, status, chain_bet_index, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, NOW())
+      ON CONFLICT DO NOTHING
+    `, [userId, drawIdNum, gameType, number, amountUsdt, potentialPayout, multiplier, betIndexNum]);
+
+    console.log(`[BolitaIndexer] BetPlaced: draw=${drawIdNum} idx=${betIndexNum} user=${userAddr} ${gameType}:${number} ${amountUsdt} USDT`);
+  }
+
+  async _indexBetPaid(drawId, betIndex, user, payout) {
+    const drawIdNum = Number(drawId);
+    const betIndexNum = Number(betIndex);
+    const payoutUsdt = parseFloat(ethers.formatUnits(payout, TOKEN_DECIMALS));
+
+    await query(`
+      UPDATE bets SET
+        status = 'won',
+        payout_amount = $1,
+        updated_at = NOW()
+      WHERE draw_id = $2 AND chain_bet_index = $3
+    `, [payoutUsdt, drawIdNum, betIndexNum]);
+
+    console.log(`[BolitaIndexer] BetPaid: draw=${drawIdNum} idx=${betIndexNum} payout=${payoutUsdt} USDT`);
+  }
+
+  async _indexBetRefunded(drawId, betIndex, user, amount) {
+    const drawIdNum = Number(drawId);
+    const betIndexNum = Number(betIndex);
+
+    await query(`
+      UPDATE bets SET status = 'refunded', updated_at = NOW()
+      WHERE draw_id = $1 AND chain_bet_index = $2
+    `, [drawIdNum, betIndexNum]);
+
+    console.log(`[BolitaIndexer] BetRefunded: draw=${drawIdNum} idx=${betIndexNum}`);
+  }
+
+  /**
+   * Backfill historical events from a starting block
+   */
+  async backfill(fromBlock = 0) {
+    if (!this.contract) {
+      const ok = await this.init();
+      if (!ok) return;
+    }
+
+    console.log(`[BolitaIndexer] Backfilling from block ${fromBlock}...`);
+
+    const events = [
+      'DrawCreated', 'DrawOpened', 'DrawClosed',
+      'WinningNumberSet', 'DrawResolved', 'DrawCancelled',
+      'BetPlaced', 'BetPaid', 'BetRefunded'
+    ];
+
+    for (const eventName of events) {
+      try {
+        const filter = this.contract.filters[eventName]();
+        const logs = await this.contract.queryFilter(filter, fromBlock);
+        console.log(`[BolitaIndexer] Found ${logs.length} ${eventName} events`);
+
+        for (const log of logs) {
+          const parsed = this.contract.interface.parseLog({
+            topics: log.topics,
+            data: log.data
+          });
+
+          switch (eventName) {
+            case 'DrawCreated':
+              await this._indexDrawCreated(parsed.args[0], parsed.args[1], parsed.args[2]);
+              break;
+            case 'DrawOpened':
+              await this._updateDrawStatus(parsed.args[0], 'open');
+              break;
+            case 'DrawClosed':
+              await this._updateDrawStatus(parsed.args[0], 'closed');
+              break;
+            case 'WinningNumberSet':
+              await this._indexWinningNumber(parsed.args[0], parsed.args[1]);
+              break;
+            case 'DrawResolved':
+              await this._indexDrawResolved(parsed.args[0], parsed.args[1], parsed.args[2]);
+              break;
+            case 'DrawCancelled':
+              await this._indexDrawCancelled(parsed.args[0], parsed.args[1]);
+              break;
+            case 'BetPlaced':
+              await this._indexBetPlaced(
+                parsed.args[0], parsed.args[1], parsed.args[2],
+                parsed.args[3], parsed.args[4], parsed.args[5]
+              );
+              break;
+            case 'BetPaid':
+              await this._indexBetPaid(parsed.args[0], parsed.args[1], parsed.args[2], parsed.args[3]);
+              break;
+            case 'BetRefunded':
+              await this._indexBetRefunded(parsed.args[0], parsed.args[1], parsed.args[2], parsed.args[3]);
+              break;
+          }
+        }
+      } catch (err) {
+        console.error(`[BolitaIndexer] Error backfilling ${eventName}:`, err.message);
+      }
+    }
+
+    console.log('[BolitaIndexer] Backfill complete');
+  }
+}
+
+// Singleton
+const bolitaIndexer = new BolitaIndexer();
+
+module.exports = { bolitaIndexer, BolitaIndexer };
