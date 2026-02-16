@@ -60,10 +60,10 @@ async function checkNumberAvailability(drawId, gameType, betNumber, requestedAmo
             WHERE draw_id = $1 AND game_type = $2 AND bet_number = $3
         `, [drawId, gameType, betNumber]);
 
-        const currentAmount = parseFloat(exposureResult.rows[0]?.total_amount || 0);
+        const currentAmount = Math.round(parseFloat(exposureResult.rows[0]?.total_amount || 0) * 100) / 100;
         const isSoldOut = exposureResult.rows[0]?.is_sold_out || false;
 
-        const availableAmount = Math.max(0, limit - currentAmount);
+        const availableAmount = Math.round(Math.max(0, limit - currentAmount) * 100) / 100;
 
         if (isSoldOut || availableAmount <= 0) {
             return {
@@ -104,13 +104,15 @@ async function checkNumberAvailability(drawId, gameType, betNumber, requestedAmo
  */
 async function registerBetExposure(client, drawId, gameType, betNumber, amount) {
     const multiplier = GAME_RULES[gameType]?.multiplier || 65;
-    const potentialPayout = amount * multiplier;
+    // Use integer cents to avoid floating-point errors
+    const amountCents = Math.round(amount * 100);
+    const potentialPayout = amountCents * multiplier / 100;
 
     // Obtener límite actual
     const limitResult = await client.query(
         'SELECT current_limit_per_number FROM bankroll_status LIMIT 1'
     );
-    const limit = parseFloat(limitResult.rows[0]?.current_limit_per_number || 2);
+    const limit = Math.round(parseFloat(limitResult.rows[0]?.current_limit_per_number || 2) * 100) / 100;
 
     // Insertar o actualizar exposición
     const result = await client.query(`
@@ -198,10 +200,11 @@ async function settleDrawPool(drawId, winningNumbers, totalPool, prizesPaid) {
             ? BOLITA_PRIZES.distributionWithWinner
             : BOLITA_PRIZES.distributionNoWinner;
 
-        // Calcular montos
-        const feeAmount = (totalPool * distribution.feeBps) / 10000;
-        const toReserve = (totalPool * distribution.reserveBps) / 10000;
-        const toBankroll = (totalPool * distribution.bankrollBps) / 10000;
+        // Calcular montos (use integer cents to avoid floating-point errors)
+        const poolCents = Math.round(totalPool * 100);
+        const feeAmount = Math.round(poolCents * distribution.feeBps / 10000) / 100;
+        const toReserve = Math.round(poolCents * distribution.reserveBps / 10000) / 100;
+        const toBankroll = Math.round(poolCents * distribution.bankrollBps / 10000) / 100;
 
         console.log(`\n=== Liquidación Sorteo ${drawId} ===`);
         console.log(`Pool total: ${totalPool} USDT`);
@@ -217,12 +220,12 @@ async function settleDrawPool(drawId, winningNumbers, totalPool, prizesPaid) {
         );
         const currentStatus = statusResult.rows[0];
 
-        const oldBankroll = parseFloat(currentStatus.bankroll_balance);
-        const oldReserve = parseFloat(currentStatus.prize_reserve);
+        const oldBankroll = Math.round(parseFloat(currentStatus.bankroll_balance) * 100) / 100;
+        const oldReserve = Math.round(parseFloat(currentStatus.prize_reserve) * 100) / 100;
 
-        // La reserva se usa para pagar premios y se repone
-        const newReserve = oldReserve - prizesPaid + toReserve;
-        const newBankroll = oldBankroll + toBankroll;
+        // La reserva se usa para pagar premios y se repone (integer cents math)
+        const newReserve = Math.round((oldReserve - prizesPaid + toReserve) * 100) / 100;
+        const newBankroll = Math.round((oldBankroll + toBankroll) * 100) / 100;
 
         // Calcular nuevo límite
         const newLimit = calculateNewLimit(newBankroll, newReserve);
@@ -369,12 +372,12 @@ async function canAcceptBet(drawId, gameType, betNumber, amount) {
 
         // Verificar que la reserva puede cubrir el pago potencial
         const multiplier = GAME_RULES[gameType]?.multiplier || 65;
-        const potentialPayout = amount * multiplier;
+        const potentialPayout = Math.round(amount * multiplier * 100) / 100;
 
         const reserveResult = await client.query(
             'SELECT prize_reserve FROM bankroll_status LIMIT 1'
         );
-        const reserve = parseFloat(reserveResult.rows[0]?.prize_reserve || 0);
+        const reserve = Math.round(parseFloat(reserveResult.rows[0]?.prize_reserve || 0) * 100) / 100;
 
         // Obtener exposición actual del sorteo
         const exposureResult = await client.query(`
@@ -382,7 +385,7 @@ async function canAcceptBet(drawId, gameType, betNumber, amount) {
             FROM number_exposure
             WHERE draw_id = $1
         `, [drawId]);
-        const currentExposure = parseFloat(exposureResult.rows[0]?.total_exposure || 0);
+        const currentExposure = Math.round(parseFloat(exposureResult.rows[0]?.total_exposure || 0) * 100) / 100;
 
         // La reserva debe cubrir al menos la exposición máxima de UN número ganador
         // No todos, porque solo puede haber un ganador por tipo
@@ -490,12 +493,12 @@ async function adjustCapital(targetFund, amount, reason, adminId) {
         let balanceBefore, balanceAfter, updateField;
 
         if (targetFund === 'reserve') {
-            balanceBefore = parseFloat(status.prize_reserve);
-            balanceAfter = balanceBefore + amount;
+            balanceBefore = Math.round(parseFloat(status.prize_reserve) * 100) / 100;
+            balanceAfter = Math.round((balanceBefore + amount) * 100) / 100;
             updateField = 'prize_reserve';
         } else if (targetFund === 'bankroll') {
-            balanceBefore = parseFloat(status.bankroll_balance);
-            balanceAfter = balanceBefore + amount;
+            balanceBefore = Math.round(parseFloat(status.bankroll_balance) * 100) / 100;
+            balanceAfter = Math.round((balanceBefore + amount) * 100) / 100;
             updateField = 'bankroll_balance';
         } else {
             throw new Error('Fondo inválido. Use "reserve" o "bankroll"');

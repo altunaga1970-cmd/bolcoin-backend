@@ -57,7 +57,9 @@ function calculateBolitaPayout(gameType, betNumber, amount, winningNumber) {
     const won = paddedBetNumber === targetNumber;
 
     if (won) {
-        const payout = amount * rules.multiplier;
+        // Use integer cents to avoid floating-point errors
+        const amountCents = Math.round(amount * 100);
+        const payout = amountCents * rules.multiplier / 100;
         return {
             won: true,
             payout,
@@ -84,10 +86,11 @@ function calculateDrawPrizes(bets, winningNumber) {
     };
 
     for (const bet of bets) {
+        const betAmount = Math.round(parseFloat(bet.amount) * 100) / 100;
         const result = calculateBolitaPayout(
             bet.game_type,
             bet.bet_number,
-            parseFloat(bet.amount),
+            betAmount,
             winningNumber
         );
 
@@ -97,12 +100,12 @@ function calculateDrawPrizes(bets, winningNumber) {
                 userId: bet.user_id,
                 gameType: bet.game_type,
                 betNumber: bet.bet_number,
-                amount: parseFloat(bet.amount),
+                amount: betAmount,
                 payout: result.payout,
                 multiplier: result.multiplier
             });
 
-            totalPayout += result.payout;
+            totalPayout = Math.round((totalPayout + result.payout) * 100) / 100;
 
             if (breakdown[bet.game_type]) {
                 breakdown[bet.game_type].count++;
