@@ -347,9 +347,13 @@ const BCRYPT_CONFIG = {
 // OPERATOR WALLET CONFIGURATION
 // =================================
 
+if (!process.env.OPERATOR_WALLET) {
+    console.error('[FATAL] OPERATOR_WALLET env var is required. No hardcoded fallback allowed.');
+}
+
 const OPERATOR_CONFIG = {
-    // Wallet address for receiving operator fees
-    WALLET_ADDRESS: process.env.OPERATOR_WALLET || '0xF52616a91Ff9368D5A25186D179Bf33D505bE520',
+    // Wallet address for receiving operator fees (MUST be set via env var)
+    WALLET_ADDRESS: process.env.OPERATOR_WALLET || (() => { throw new Error('OPERATOR_WALLET env var is required'); })(),
 
     // Fee percentages (in basis points, 10000 = 100%)
     BOLITA_FEE_BPS: 500,     // 5% of La Bolita pool

@@ -69,8 +69,8 @@ function validateBet(bet) {
         );
     }
 
-    // Validar monto
-    const numAmount = parseFloat(amount);
+    // Validar monto (use integer math: round to 2 decimal places then compare)
+    const numAmount = Math.round(parseFloat(amount) * 100) / 100;
     if (isNaN(numAmount) || numAmount <= 0) {
         throw new Error('Monto de apuesta inválido');
     }
@@ -88,20 +88,20 @@ function validateBet(bet) {
  * Calcular costo total de apuestas
  */
 function calculateTotalCost(bets) {
-    let total = 0;
+    // Use integer cents to avoid floating-point errors
+    let totalCents = 0;
 
     for (const bet of bets) {
-        const amount = parseFloat(bet.amount);
+        const amountCents = Math.round(parseFloat(bet.amount) * 100);
 
         if (bet.game_type === 'corrido') {
-            // Corrido cuesta 2x (dos apuestas Fijos)
-            total += amount * 2;
+            totalCents += amountCents * 2;
         } else {
-            total += amount;
+            totalCents += amountCents;
         }
     }
 
-    return total;
+    return totalCents / 100;
 }
 
 /**
@@ -128,76 +128,8 @@ async function getUserWalletAddress(userId) {
     }
 }
 
-/**
- * Depositar automáticamente tokens al contrato para un usuario (solo desarrollo)
- */
-async function autoDepositForUser(walletAddress, amount) {
-    try {
-        console.log(`[Deposit] Starting auto-deposit for ${walletAddress}, amount: ${amount} USDT`);
-
-        const contractInstance = getLaBolitaContract();
-        console.log(`[Deposit] Contract instance ready`);
-
-        // Verificar balance actual del usuario en el contrato
-        const currentBalance = await contractInstance.userBalances(walletAddress);
-        console.log(`[Deposit] Current contract balance: ${ethers.formatUnits(currentBalance, 6)} USDT`);
-
-        // Usar la función adminDeposit del contrato
-        const amountInWei = ethers.parseUnits(amount.toString(), 6); // USDT tiene 6 decimales
-        console.log(`[Deposit] Amount in wei: ${amountInWei}`);
-
-        console.log(`[Deposit] Calling adminDeposit(${walletAddress}, ${amountInWei})`);
-
-        // Estimar gas primero
-        try {
-            const gasEstimate = await contractInstance.adminDeposit.estimateGas(walletAddress, amountInWei);
-            console.log(`[Deposit] Gas estimate: ${gasEstimate}`);
-        } catch (gasError) {
-            console.error(`[Deposit] Gas estimation failed:`, gasError.message);
-            return false;
-        }
-
-        const tx = await contractInstance.adminDeposit(walletAddress, amountInWei);
-        console.log(`[Deposit] Transaction sent: ${tx.hash}`);
-        console.log(`[Deposit] Transaction details:`, {
-            to: tx.to,
-            value: tx.value,
-            gasLimit: tx.gasLimit,
-            gasPrice: tx.gasPrice
-        });
-
-        console.log(`[Deposit] Waiting for confirmation...`);
-        const receipt = await tx.wait();
-        console.log(`[Deposit] Transaction confirmed!`);
-        console.log(`[Deposit] Block: ${receipt.blockNumber}`);
-        console.log(`[Deposit] Gas used: ${receipt.gasUsed}`);
-        console.log(`[Deposit] Status: ${receipt.status}`);
-
-        // Verificar nuevo balance
-        const newBalance = await contractInstance.userBalances(walletAddress);
-        console.log(`[Deposit] New contract balance: ${ethers.formatUnits(newBalance, 6)} USDT`);
-
-        const expectedBalance = ethers.parseUnits((parseFloat(ethers.formatUnits(currentBalance, 6)) + parseFloat(amount)).toString(), 6);
-        if (newBalance >= expectedBalance) {
-            console.log(`[Deposit] Balance verification: ✓`);
-            return true;
-        } else {
-            console.error(`[Deposit] Balance verification failed. Expected: ${ethers.formatUnits(expectedBalance, 6)}, Got: ${ethers.formatUnits(newBalance, 6)}`);
-            return false;
-        }
-
-    } catch (error) {
-        console.error('[Deposit] Auto-deposit failed:', error.message);
-        console.error('[Deposit] Error stack:', error.stack);
-
-        // Más detalles del error
-        if (error.code) console.error('[Deposit] Error code:', error.code);
-        if (error.reason) console.error('[Deposit] Error reason:', error.reason);
-        if (error.transaction) console.error('[Deposit] Transaction data:', error.transaction);
-
-        return false;
-    }
-}
+// autoDepositForUser REMOVED — security vulnerability (custodial pattern)
+// In non-custodial mode, users interact directly with the smart contract
 
 /**
  * Realizar apuestas (con sistema de límites por número)
@@ -273,13 +205,17 @@ async function placeBets(userId, drawId, bets) {
             throw new Error(`Balance insuficiente. Tienes ${currentBalance} USDT, necesitas ${totalCost} USDT`);
         }
 
-        // 4. Debitar balance
+        // 4. Debitar balance (with optimistic locking check)
         const newBalance = currentBalance - totalCost;
 
-        await client.query(
+        const updateResult = await client.query(
             'UPDATE users SET balance = $1, version = version + 1 WHERE id = $2 AND version = $3',
             [newBalance, userId, user.version]
         );
+
+        if (updateResult.rowCount === 0) {
+            throw new Error('Concurrent balance update detected. Please retry.');
+        }
 
         // 5. Crear registros de apuestas y registrar exposición
         const createdBets = [];
@@ -316,120 +252,9 @@ async function placeBets(userId, drawId, bets) {
             createdBets.push(betResult.rows[0]);
         }
 
-        // 6. Registrar apuestas en blockchain
-        try {
-            console.log(`[BetService] ===== STARTING BLOCKCHAIN REGISTRATION =====`);
-            console.log(`[BetService] Bets to register: ${createdBets.length}`);
-            console.log(`[BetService] Total cost: ${totalCost} USDT`);
-
-            // getLaBolitaContract() lanza error si falta CONTRACT_ADDRESS o RPC_URL
-            const contractInstance = getLaBolitaContract();
-            console.log(`[BetService] Contract instance created successfully`);
-
-            // Verificar conexión básica al contrato
-            try {
-                const betCounter = await contractInstance.betCounter();
-                console.log(`[BetService] Contract betCounter: ${betCounter}`);
-            } catch (counterError) {
-                console.error(`[BetService] Error reading betCounter:`, counterError.message);
-                throw new Error(`Cannot connect to contract: ${counterError.message}`);
-            }
-
-            // Obtener wallet del usuario
-            console.log(`[BetService] Getting wallet address for user ${userId}`);
-            const userWalletAddress = await getUserWalletAddress(userId);
-            console.log(`[BetService] Wallet address result: ${userWalletAddress}`);
-
-            if (!userWalletAddress) {
-                console.error(`[BetService] No wallet address found for user ${userId}`);
-                throw new Error('User wallet address not found');
-            }
-
-            console.log(`[BetService] User wallet address: ${userWalletAddress}`);
-
-            // Verificar que la dirección sea válida
-            if (!ethers.isAddress(userWalletAddress)) {
-                throw new Error(`Invalid wallet address: ${userWalletAddress}`);
-            }
-
-            // Verificar balance actual en contrato
-            console.log(`[BetService] Checking contract balance for ${userWalletAddress}`);
-            const currentContractBalance = await contractInstance.userBalances(userWalletAddress);
-            const balanceInUSDT = ethers.formatUnits(currentContractBalance, 6);
-            console.log(`[BetService] Current contract balance: ${balanceInUSDT} USDT`);
-
-            const requiredBalance = ethers.parseUnits(totalCost.toString(), 6);
-            console.log(`[BetService] Required balance: ${ethers.formatUnits(requiredBalance, 6)} USDT`);
-
-            // Si no tiene suficiente balance en contrato, depositar automáticamente
-            if (currentContractBalance < requiredBalance) {
-                console.log(`[BetService] Balance insufficient, depositing ${totalCost} USDT to contract`);
-                const depositResult = await autoDepositForUser(userWalletAddress, totalCost);
-                if (!depositResult) {
-                    throw new Error('Failed to deposit funds to contract');
-                }
-                console.log(`[BetService] Deposit completed successfully`);
-            } else {
-                console.log(`[BetService] User has sufficient balance in contract (${balanceInUSDT} >= ${totalCost})`);
-            }
-
-            // Registrar cada apuesta en el contrato
-            let totalGasUsed = 0;
-            let betIds = [];
-
-            for (const bet of createdBets) {
-                // Mapear game_type al enum del contrato
-                const betTypeMap = {
-                    'fijos': 0,    // BetType.FIJO
-                    'centenas': 1, // BetType.CENTENA
-                    'parles': 2    // BetType.PARLE
-                };
-
-                const betType = betTypeMap[bet.game_type];
-                if (betType !== undefined) {
-                    const amountInWei = ethers.parseUnits(bet.amount.toString(), 6);
-
-                    console.log(`[BetService] Submitting bet: ${bet.game_type} ${bet.bet_number} for ${bet.amount} USDT`);
-
-                    const tx = await contractInstance.placeBet(drawId, betType, bet.bet_number, amountInWei);
-                    console.log(`[BetService] Bet tx sent: ${tx.hash}`);
-
-                    const receipt = await tx.wait();
-                    console.log(`[BetService] Bet confirmed in block ${receipt.blockNumber}, gas used: ${receipt.gasUsed}`);
-
-                    totalGasUsed += receipt.gasUsed;
-
-                    // Extraer betId del evento BetPlaced
-                    const betPlacedEvent = receipt.logs.find(log => {
-                        try {
-                            return contractInstance.interface.parseLog(log).name === 'BetPlaced';
-                        } catch {
-                            return false;
-                        }
-                    });
-
-                    if (betPlacedEvent) {
-                        const parsedEvent = contractInstance.interface.parseLog(betPlacedEvent);
-                        const betId = parsedEvent.args[0];
-                        betIds.push(betId);
-                        console.log(`[BetService] Bet registered with ID: ${betId}`);
-                    } else {
-                        console.warn(`[BetService] BetPlaced event not found in tx ${tx.hash}`);
-                    }
-
-                } else {
-                    console.log(`[BetService] Skipping bet with unknown game_type: ${bet.game_type}`);
-                }
-            }
-
-            console.log(`[BetService] All ${createdBets.length} bets registered successfully. Total gas used: ${totalGasUsed}, Bet IDs: ${betIds.join(', ')}`);
-
-        } catch (contractError) {
-            console.error('[BetService] Blockchain registration failed:', contractError.message);
-            console.error('[BetService] Full error details:', contractError);
-            // En desarrollo, continuar sin blockchain por ahora
-            console.log('[BetService] Continuing without blockchain registration for development');
-        }
+        // NOTE: In non-custodial mode, bets go directly to the smart contract
+        // from the frontend. This backend path is legacy/indexer-only.
+        // No blockchain registration from backend — users call contract directly.
 
         await client.query('COMMIT');
 

@@ -52,10 +52,12 @@ function requireFlag(flagKey) {
 
     } catch (err) {
       console.error('[FeatureFlag] Error checking flag:', err);
-      // En caso de error, permitir acceso (fail open) pero loggear
-      // Cambiar a fail closed si se prefiere seguridad sobre disponibilidad:
-      // return res.status(500).json({ success: false, error: 'INTERNAL_ERROR' });
-      next();
+      // Fail closed: deny access when flag service is unavailable
+      return res.status(503).json({
+        success: false,
+        message: 'Servicio temporalmente no disponible. Intente mas tarde.',
+        flag: flagKey
+      });
     }
   };
 }
@@ -103,7 +105,10 @@ function requireAllFlags(flagKeys) {
 
     } catch (err) {
       console.error('[FeatureFlag] Error checking flags:', err);
-      next();
+      return res.status(503).json({
+        success: false,
+        message: 'Servicio temporalmente no disponible. Intente mas tarde.'
+      });
     }
   };
 }
@@ -138,7 +143,10 @@ function requireAnyFlag(flagKeys) {
 
     } catch (err) {
       console.error('[FeatureFlag] Error checking flags:', err);
-      next();
+      return res.status(503).json({
+        success: false,
+        message: 'Servicio temporalmente no disponible. Intente mas tarde.'
+      });
     }
   };
 }

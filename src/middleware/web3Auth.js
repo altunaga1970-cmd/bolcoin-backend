@@ -69,7 +69,8 @@ async function authenticateWallet(req, res, next) {
             });
         }
 
-        // Validate message format: "Bolcoin Auth: <address> at <dayTimestamp>"
+        // Validate message format: "Bolcoin Auth: <address> at <timestamp>"
+        // Accepts both day-based timestamps (legacy) and second-based timestamps
         const messageRegex = /^Bolcoin Auth: (0x[a-f0-9]{40}) at (\d+)$/;
         const match = message.match(messageRegex);
         if (!match) {
@@ -87,14 +88,28 @@ async function authenticateWallet(req, res, next) {
             });
         }
 
-        // Verify the day timestamp is not too old (max 2 days)
-        const messageDayTs = parseInt(match[2]);
-        const currentDayTs = Math.floor(Date.now() / 86400000);
-        if (Math.abs(currentDayTs - messageDayTs) > 2) {
-            return res.status(401).json({
-                success: false,
-                message: 'Firma expirada. Reconecta tu wallet.'
-            });
+        // Verify timestamp is not too old (max 5 minutes)
+        const messageTs = parseInt(match[2]);
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        // Detect if timestamp is in seconds (> 1e9) or days (< 1e6)
+        const isSecondsTimestamp = messageTs > 1_000_000_000;
+        if (isSecondsTimestamp) {
+            // New format: seconds-based, 5-minute window
+            if (Math.abs(nowSeconds - messageTs) > 300) {
+                return res.status(401).json({
+                    success: false,
+                    message: 'Firma expirada. Reconecta tu wallet.'
+                });
+            }
+        } else {
+            // Legacy format: day-based, 5-minute tolerance via day boundary
+            const currentDayTs = Math.floor(Date.now() / 86400000);
+            if (Math.abs(currentDayTs - messageTs) > 0) {
+                return res.status(401).json({
+                    success: false,
+                    message: 'Firma expirada. Reconecta tu wallet.'
+                });
+            }
         }
 
         const recoveredAddress = verifySignature(message, signature);
@@ -106,9 +121,8 @@ async function authenticateWallet(req, res, next) {
             });
         }
 
-        // Determinar rol - en produccion, ADMIN_WALLETS vacio = nadie es admin
-        const isAdmin = (process.env.NODE_ENV === 'development' && ADMIN_WALLETS.length === 0) ||
-                       ADMIN_WALLETS.includes(normalizedAddress);
+        // Determinar rol - ADMIN_WALLETS vacio = nadie es admin (no dev exception)
+        const isAdmin = ADMIN_WALLETS.includes(normalizedAddress);
 
         // Look up or create user in database
         let userId = null;
@@ -218,13 +232,12 @@ async function optionalWalletAuth(req, res, next) {
 
         if (walletAddress && ethers.isAddress(walletAddress)) {
             const normalizedAddress = walletAddress.toLowerCase();
-            const isAdmin = (process.env.NODE_ENV === 'development' && ADMIN_WALLETS.length === 0) ||
-                           ADMIN_WALLETS.includes(normalizedAddress);
 
+            // Without signature verification, always assign USER role (never admin)
             req.user = {
                 id: normalizedAddress,
                 address: normalizedAddress,
-                role: isAdmin ? USER_ROLES.ADMIN : USER_ROLES.USER
+                role: USER_ROLES.USER
             };
         }
 
