@@ -6,8 +6,9 @@
  *
  * MVP Keno:
  * - betAmount: 1 USDT (fijo)
- * - feeBps: 1200 (12%)
- * - poolBps: 8800 (88%)
+ * - feeBps: 1200 (12% fee sobre cada apuesta, siempre)
+ * - effectiveBet: betAmount * (1 - feeBps/10000) = $0.88
+ * - Multiplicadores aplican sobre effectiveBet
  * - maxPayout: DINAMICO basado en pool (10% del pool)
  *
  * Sistema de Cap Dinamico:
@@ -296,28 +297,40 @@ async function setConfigValue(key, value, valueType = 'string') {
 }
 
 /**
- * Calcular distribucion de perdida (fee + pool)
- * @param {number} loss - Monto perdido
+ * Calcular fee y apuesta efectiva a partir de la apuesta bruta.
+ * El fee (12%) se cobra SIEMPRE (gane o pierda).
+ * Los multiplicadores de la tabla aplican sobre effectiveBet.
+ *
+ * @param {number} grossBet - Apuesta bruta del jugador (ej: $1.00)
  * @param {number} feeBps - Fee en basis points (default 1200 = 12%)
- * @param {number} poolBps - Pool en basis points (default 8800 = 88%)
- * @returns {Object} { fee, reserve, total }
+ * @returns {Object} { fee, effectiveBet, grossBet }
  */
-function calculateLossDistribution(loss, feeBps = 1200, poolBps = 8800) {
-  // Round fee DOWN (truncate) — remainder goes to pool
-  const fee = Math.floor((loss * feeBps) / 10000 * 1000000) / 1000000;
-  // Reserve = total loss - fee (captures the rounding remainder)
-  const reserve = Math.round((loss - fee) * 1000000) / 1000000;
+function calculateBetFee(grossBet, feeBps = 1200) {
+  // Round fee DOWN (truncate) — remainder goes to effective bet
+  const fee = Math.floor((grossBet * feeBps) / 10000 * 1000000) / 1000000;
+  const effectiveBet = Math.round((grossBet - fee) * 1000000) / 1000000;
 
   return {
     fee,
-    reserve,
-    total: loss
+    effectiveBet,
+    grossBet
   };
 }
 
 /**
- * Calcular payout con cap dinamico aplicado
- * @param {number} bet - Monto apostado
+ * @deprecated Use calculateBetFee instead. Kept for backward compatibility.
+ */
+function calculateLossDistribution(loss, feeBps = 1200, poolBps = 8800) {
+  const fee = Math.floor((loss * feeBps) / 10000 * 1000000) / 1000000;
+  const reserve = Math.round((loss - fee) * 1000000) / 1000000;
+  return { fee, reserve, total: loss };
+}
+
+/**
+ * Calcular payout con cap dinamico aplicado.
+ * bet debe ser la apuesta efectiva (ya descontado el fee).
+ *
+ * @param {number} bet - Apuesta efectiva (grossBet - fee)
  * @param {number} multiplier - Multiplicador ganado
  * @param {number} maxPayout - Cap maximo (dinamico basado en pool)
  * @returns {Object} { theoreticalPayout, actualPayout, capped, maxPayout }
@@ -343,13 +356,11 @@ function invalidatePoolBalanceCache() {
 }
 
 /**
- * Verificar si debemos cobrar fee (solo en perdidas)
- * @param {number} netResult - Resultado neto (payout - bet)
- * @returns {boolean}
+ * Fee se cobra siempre sobre cada apuesta (gane o pierda).
+ * @returns {boolean} Siempre true
  */
-function shouldChargeFee(netResult) {
-  // Solo cobrar fee cuando el jugador pierde (netResult < 0)
-  return netResult < 0;
+function shouldChargeFee() {
+  return true;
 }
 
 /**
@@ -408,6 +419,7 @@ module.exports = {
   calculateDynamicMaxPayout,
   invalidatePoolBalanceCache,
   // Calculations
+  calculateBetFee,
   calculateLossDistribution,
   calculateCappedPayout,
   shouldChargeFee,

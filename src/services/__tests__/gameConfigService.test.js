@@ -1,4 +1,5 @@
 const {
+  calculateBetFee,
   calculateLossDistribution,
   calculateCappedPayout,
   shouldChargeFee,
@@ -6,71 +7,81 @@ const {
 } = require('../gameConfigService');
 
 describe('gameConfigService', () => {
-  describe('calculateLossDistribution', () => {
-    it('splits a $1 loss into 12% fee and 88% reserve', () => {
+  describe('calculateBetFee', () => {
+    it('splits a $1 bet into 12% fee and $0.88 effective bet', () => {
+      const result = calculateBetFee(1, 1200);
+      expect(result.fee).toBeCloseTo(0.12, 6);
+      expect(result.effectiveBet).toBeCloseTo(0.88, 6);
+      expect(result.grossBet).toBe(1);
+      expect(result.fee + result.effectiveBet).toBeCloseTo(1, 6);
+    });
+
+    it('handles fractional bets without floating-point drift', () => {
+      const result = calculateBetFee(0.33, 1200);
+      expect(result.fee + result.effectiveBet).toBeCloseTo(0.33, 6);
+      expect(result.fee).toBeGreaterThanOrEqual(0);
+      expect(result.effectiveBet).toBeGreaterThanOrEqual(0);
+    });
+
+    it('handles large bets', () => {
+      const result = calculateBetFee(10000, 1200);
+      expect(result.fee).toBeCloseTo(1200, 2);
+      expect(result.effectiveBet).toBeCloseTo(8800, 2);
+      expect(result.grossBet).toBe(10000);
+    });
+
+    it('fee + effectiveBet always equals grossBet', () => {
+      const amounts = [0.01, 0.1, 0.33, 0.99, 1, 2.5, 7.77, 100, 999.99];
+      for (const amount of amounts) {
+        const result = calculateBetFee(amount);
+        expect(result.fee + result.effectiveBet).toBeCloseTo(amount, 5);
+      }
+    });
+
+    it('fee is always <= grossBet', () => {
+      for (let i = 0; i < 100; i++) {
+        const bet = Math.random() * 1000;
+        const result = calculateBetFee(bet);
+        expect(result.fee).toBeLessThanOrEqual(bet);
+        expect(result.effectiveBet).toBeLessThanOrEqual(bet);
+      }
+    });
+
+    it('handles zero bet', () => {
+      const result = calculateBetFee(0);
+      expect(result.fee).toBe(0);
+      expect(result.effectiveBet).toBe(0);
+      expect(result.grossBet).toBe(0);
+    });
+  });
+
+  describe('calculateLossDistribution (deprecated)', () => {
+    it('still works for backward compatibility', () => {
       const result = calculateLossDistribution(1, 1200, 8800);
       expect(result.fee).toBeCloseTo(0.12, 6);
       expect(result.reserve).toBeCloseTo(0.88, 6);
       expect(result.total).toBe(1);
-      expect(result.fee + result.reserve).toBeCloseTo(1, 6);
-    });
-
-    it('handles fractional losses without floating-point drift', () => {
-      const result = calculateLossDistribution(0.33, 1200, 8800);
-      expect(result.fee + result.reserve).toBeCloseTo(0.33, 6);
-      expect(result.fee).toBeGreaterThanOrEqual(0);
-      expect(result.reserve).toBeGreaterThanOrEqual(0);
-    });
-
-    it('handles large losses', () => {
-      const result = calculateLossDistribution(10000, 1200, 8800);
-      expect(result.fee).toBeCloseTo(1200, 2);
-      expect(result.reserve).toBeCloseTo(8800, 2);
-      expect(result.total).toBe(10000);
-    });
-
-    it('fee + reserve always equals total', () => {
-      const amounts = [0.01, 0.1, 0.33, 0.99, 1, 2.5, 7.77, 100, 999.99];
-      for (const amount of amounts) {
-        const result = calculateLossDistribution(amount);
-        expect(result.fee + result.reserve).toBeCloseTo(amount, 5);
-      }
-    });
-
-    it('fee is always <= loss', () => {
-      for (let i = 0; i < 100; i++) {
-        const loss = Math.random() * 1000;
-        const result = calculateLossDistribution(loss);
-        expect(result.fee).toBeLessThanOrEqual(loss);
-        expect(result.reserve).toBeLessThanOrEqual(loss);
-      }
-    });
-
-    it('handles zero loss', () => {
-      const result = calculateLossDistribution(0);
-      expect(result.fee).toBe(0);
-      expect(result.reserve).toBe(0);
-      expect(result.total).toBe(0);
     });
   });
 
   describe('calculateCappedPayout', () => {
-    it('returns uncapped payout when below max', () => {
-      const result = calculateCappedPayout(1, 3, 50);
-      expect(result.theoreticalPayout).toBe(3);
-      expect(result.actualPayout).toBe(3);
+    it('returns uncapped payout when below max (effective bet)', () => {
+      // With $0.88 effective bet, 3x = $2.64
+      const result = calculateCappedPayout(0.88, 3, 50);
+      expect(result.theoreticalPayout).toBeCloseTo(2.64, 2);
+      expect(result.actualPayout).toBeCloseTo(2.64, 2);
       expect(result.capped).toBe(false);
     });
 
     it('caps payout at maxPayout', () => {
-      const result = calculateCappedPayout(1, 10000, 50);
-      expect(result.theoreticalPayout).toBe(10000);
+      const result = calculateCappedPayout(0.88, 10000, 50);
+      expect(result.theoreticalPayout).toBeCloseTo(8800, 2);
       expect(result.actualPayout).toBe(50);
       expect(result.capped).toBe(true);
     });
 
     it('returns zero for zero multiplier', () => {
-      const result = calculateCappedPayout(1, 0, 50);
+      const result = calculateCappedPayout(0.88, 0, 50);
       expect(result.theoreticalPayout).toBe(0);
       expect(result.actualPayout).toBe(0);
       expect(result.capped).toBe(false);
@@ -84,18 +95,11 @@ describe('gameConfigService', () => {
   });
 
   describe('shouldChargeFee', () => {
-    it('charges fee on losses (negative netResult)', () => {
+    it('always charges fee (on every bet)', () => {
       expect(shouldChargeFee(-1)).toBe(true);
-      expect(shouldChargeFee(-0.01)).toBe(true);
-    });
-
-    it('does not charge fee on wins', () => {
-      expect(shouldChargeFee(1)).toBe(false);
-      expect(shouldChargeFee(100)).toBe(false);
-    });
-
-    it('does not charge fee on break-even', () => {
-      expect(shouldChargeFee(0)).toBe(false);
+      expect(shouldChargeFee(0)).toBe(true);
+      expect(shouldChargeFee(1)).toBe(true);
+      expect(shouldChargeFee(100)).toBe(true);
     });
   });
 

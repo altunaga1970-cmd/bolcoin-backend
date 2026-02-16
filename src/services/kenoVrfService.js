@@ -28,7 +28,12 @@ const RPC_URL = process.env.RPC_URL || 'http://127.0.0.1:8545';
 const VRF_CONTRACT_ADDRESS = process.env.VRF_CONTRACT_ADDRESS || process.env.CONTRACT_ADDRESS;
 const OPERATOR_PRIVATE_KEY = process.env.OPERATOR_PRIVATE_KEY;
 
-// ABI minimo para funciones VRF de Keno
+// ABI for batch VRF functions — CONTRACT STUBS, NOT YET DEPLOYED.
+// These functions (requestKenoVrfBatch, verifyKenoBatch, getKenoVrfRequest)
+// do not exist in the current KenoGame.sol contract. The on-chain VRF flow
+// uses Chainlink V2.5 via placeBet() directly. Batch VRF is a future feature.
+// When these contract calls fail, the service falls back to local simulation
+// (simulateLocalVerification), which is the active production path.
 const KENO_VRF_ABI = [
   "function requestKenoVrfBatch(bytes32 _batchHash, uint256 _gamesCount) external returns (uint256 requestId)",
   "function verifyKenoBatch(uint256 _batchId, bytes32 _batchHash) external view returns (bool)",
@@ -209,6 +214,7 @@ async function createVrfBatch() {
  */
 async function requestVrfForBatch(batchId) {
   const client = await pool.connect();
+  let batch = null;
 
   try {
     // Obtener info del batch
@@ -221,7 +227,7 @@ async function requestVrfForBatch(batchId) {
       return { success: false, error: 'Batch not found or not pending' };
     }
 
-    const batch = batchResult.rows[0];
+    batch = batchResult.rows[0];
 
     // Inicializar contrato
     initVrfContract();
@@ -257,7 +263,18 @@ async function requestVrfForBatch(batchId) {
     };
 
   } catch (err) {
-    console.error('[KenoVrfService] Error requesting VRF:', err);
+    // Distinguish missing contract functions (expected) from network errors
+    const isMissingFunction = err.code === 'CALL_EXCEPTION'
+      || err.message?.includes('no matching function')
+      || err.message?.includes('function not found')
+      || err.message?.includes('UNPREDICTABLE_GAS_LIMIT');
+
+    if (isMissingFunction) {
+      console.log(`[KenoVrfService] Batch VRF contract functions not deployed — falling back to local verification for batch #${batchId}`);
+      return await simulateLocalVerification(batchId, batch);
+    }
+
+    console.error('[KenoVrfService] Network/unexpected error requesting VRF:', err);
 
     // Marcar batch como fallido
     await client.query(

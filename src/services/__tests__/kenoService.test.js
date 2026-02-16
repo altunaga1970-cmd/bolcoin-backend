@@ -14,6 +14,11 @@ jest.mock('../gameConfigService', () => ({
   getKenoConfig: jest.fn(),
   getSystemConfig: jest.fn(),
   getConfigValue: jest.fn(),
+  calculateBetFee: jest.fn((bet, feeBps = 1200) => ({
+    fee: bet * 0.12,
+    effectiveBet: bet * 0.88,
+    grossBet: bet
+  })),
   calculateCappedPayout: jest.fn((bet, mult, max) => ({
     theoreticalPayout: bet * mult,
     actualPayout: Math.min(bet * mult, max),

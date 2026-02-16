@@ -14,7 +14,7 @@ const gameConfigService = require('./gameConfigService');
 
 // Configuración del contrato
 const RPC_URL = process.env.RPC_URL || 'http://127.0.0.1:8545';
-const CONTRACT_ADDRESS = process.env.KENO_CONTRACT_ADDRESS || process.env.CONTRACT_ADDRESS;
+const CONTRACT_ADDRESS = process.env.KENO_CONTRACT_ADDRESS;
 const OPERATOR_PRIVATE_KEY = process.env.OPERATOR_PRIVATE_KEY;
 
 // ABI para liquidación (Phase 3: 5 parameters with sessionId + signature)
@@ -34,13 +34,9 @@ const EIP712_TYPES = {
     { name: 'user', type: 'address' },
     { name: 'netAmount', type: 'uint256' },
     { name: 'isProfit', type: 'bool' },
-    { name: 'sessionId', type: 'bytes32' },
-    { name: 'deadline', type: 'uint256' }
+    { name: 'sessionId', type: 'bytes32' }
   ]
 };
-
-// Settlement signature validity period (1 hour)
-const SETTLEMENT_DEADLINE_SECONDS = 3600;
 
 let provider = null;
 let contract = null;
@@ -73,10 +69,9 @@ function initContract() {
  * @param {BigInt} netAmountWei - Net amount in wei (USDT 6 decimals)
  * @param {boolean} isProfit - True if player profited
  * @param {string} sessionIdBytes32 - Session ID as bytes32
- * @param {BigInt} deadline - Unix timestamp deadline
  * @returns {string} EIP-712 signature
  */
-async function signSettlement(userAddress, netAmountWei, isProfit, sessionIdBytes32, deadline) {
+async function signSettlement(userAddress, netAmountWei, isProfit, sessionIdBytes32) {
   if (!signer) {
     initContract();
   }
@@ -97,8 +92,7 @@ async function signSettlement(userAddress, netAmountWei, isProfit, sessionIdByte
     user: userAddress,
     netAmount: netAmountWei,
     isProfit: isProfit,
-    sessionId: sessionIdBytes32,
-    deadline: deadline
+    sessionId: sessionIdBytes32
   };
 
   const signature = await signer.signTypedData(domain, EIP712_TYPES, value);
@@ -107,11 +101,20 @@ async function signSettlement(userAddress, netAmountWei, isProfit, sessionIdByte
 
 /**
  * Obtener balance del contrato para un usuario
+ * En modo off-chain (sin CONTRACT_ADDRESS), lee users.balance de la DB
  */
 async function getContractBalance(walletAddress) {
   try {
     initContract();
-    if (!contract) return 0;
+
+    // Off-chain mode: read balance from DB instead of contract
+    if (!contract) {
+      const result = await pool.query(
+        'SELECT balance FROM users WHERE wallet_address = $1',
+        [walletAddress.toLowerCase()]
+      );
+      return result.rows[0] ? parseFloat(result.rows[0].balance) : 0;
+    }
 
     const balance = await contract.getBalance(walletAddress);
     return parseFloat(ethers.formatUnits(balance, 6));
@@ -287,11 +290,8 @@ async function settleSession(walletAddress) {
               32
             );
 
-            // Deadline: current time + 1 hour
-            const deadline = BigInt(Math.floor(Date.now() / 1000) + SETTLEMENT_DEADLINE_SECONDS);
-
-            // Sign with EIP-712 (includes deadline)
-            const signature = await signSettlement(wallet, netAmountWei, isProfit, sessionIdHex, deadline);
+            // Sign with EIP-712 (4 fields matching contract SETTLE_TYPEHASH)
+            const signature = await signSettlement(wallet, netAmountWei, isProfit, sessionIdHex);
 
             // Call contract with 5 params
             const tx = await contract.settleKenoSession(
@@ -432,5 +432,7 @@ module.exports = {
   getContractBalance,
   settleSession,
   settlePendingSessions,
-  settleOldSessions
+  settleOldSessions,
+  // Exported for testing EIP-712 signature structure
+  signSettlement
 };

@@ -339,7 +339,29 @@ if (process.env.NODE_ENV === 'development') {
         }
     });
 
-    console.log('[Dev] Development routes enabled: POST /api/dev/give-balance');
+    // Set Keno pool balance (for testing dynamic max payout cap)
+    app.post('/api/dev/set-pool', async (req, res) => {
+        try {
+            const { balance } = req.body;
+            if (balance === undefined || balance < 0) {
+                return res.status(400).json({ success: false, message: 'balance required (>= 0)' });
+            }
+            const client = await getClient();
+            const result = await client.query(
+                `UPDATE keno_pool SET balance = $1, updated_at = NOW() WHERE id = 1 RETURNING balance`,
+                [balance]
+            );
+            client.release();
+            const newBalance = parseFloat(result.rows[0]?.balance || 0);
+            const maxPayout = Math.min(newBalance * 0.10, 10000);
+            res.json({ success: true, poolBalance: newBalance, maxPayout });
+        } catch (error) {
+            console.error('Error setting pool:', error);
+            res.status(500).json({ success: false, message: error.message });
+        }
+    });
+
+    console.log('[Dev] Development routes enabled: POST /api/dev/give-balance, /api/dev/set-pool');
 
     // Debug endpoint to test betting with blockchain
     app.post('/api/dev/test-bet', require('../src/middleware/web3Auth').authenticateWallet, async (req, res) => {

@@ -7,9 +7,10 @@
  * - Liquidacion con contrato al cerrar sesion
  *
  * MVP Config:
- * - Apuesta fija: 1 USDT
- * - Fee: 12% (1200 bps) sobre perdidas
- * - Pool: 88% (8800 bps) a reserva
+ * - Apuesta fija: 1 USDT (bruta)
+ * - Fee: 12% (1200 bps) sobre cada apuesta (siempre, gane o pierda)
+ * - Apuesta efectiva: $0.88 (bruta - fee)
+ * - Multiplicadores aplican sobre apuesta efectiva
  * - Max Payout: DINAMICO (10% del pool)
  *
  * Sistema de Cap Dinamico:
@@ -34,8 +35,8 @@ const KENO_CONFIG = {
   // MVP: Valores fijos (la BD es fuente de verdad, estos son fallback)
   BET_AMOUNT: 1,          // Apuesta fija 1 USDT
   MAX_PAYOUT: 50,         // Cap de pago maximo
-  FEE_BPS: 1200,          // 12% fee
-  POOL_BPS: 8800          // 88% pool/reserva
+  FEE_BPS: 1200,          // 12% fee sobre cada apuesta
+  POOL_BPS: 8800          // 88% apuesta efectiva
 };
 
 // Tabla de pagos (spots -> hits -> multiplicador)
@@ -309,14 +310,18 @@ async function playKeno(walletAddress, selectedNumbers, betAmount, commitId = nu
     // Obtener multiplicador de la tabla
     const rawMultiplier = PAYOUT_TABLE[spots]?.[hits] || 0;
 
-    // MVP: Calcular payout con cap aplicado
+    // Fee 12% sobre apuesta bruta (siempre, gane o pierda)
+    const { fee: feeAmount, effectiveBet } = gameConfigService.calculateBetFee(bet, config.feeBps);
+
+    // Multiplicadores aplican sobre apuesta efectiva ($0.88)
     const { theoreticalPayout, actualPayout, capped } = gameConfigService.calculateCappedPayout(
-      bet,
+      effectiveBet,
       rawMultiplier,
       config.maxPayout
     );
 
     const payout = actualPayout;
+    // netResult desde perspectiva del jugador: lo que recibe - lo que pago
     const netResult = payout - bet;
 
     // Insertar juego (vinculado a la sesion) con seeds para VRF (nonce now from transaction)
@@ -351,33 +356,17 @@ async function playKeno(walletAddress, selectedNumbers, betAmount, commitId = nu
       [bet, payout, session.id]
     );
 
-    // MVP: Actualizar pool y registrar fees
-    let poolDelta = 0;
-    let feeAmount = 0;
-    let reserveAmount = 0;
+    // Fee siempre se cobra (12% de apuesta bruta). La apuesta efectiva va al pool.
+    // Si gana: pool pierde el payout pero gana la apuesta efectiva → poolDelta = effectiveBet - payout
+    // Si pierde (payout=0): pool gana la apuesta efectiva → poolDelta = effectiveBet
+    const poolDelta = effectiveBet - payout;
 
-    if (netResult < 0) {
-      // Jugador perdio: la perdida va al pool (88%) y fee (12%)
-      const loss = Math.abs(netResult);
-      const { fee, reserve } = gameConfigService.calculateLossDistribution(
-        loss,
-        config.feeBps,
-        config.poolBps
-      );
-
-      feeAmount = fee;
-      reserveAmount = reserve;
-      poolDelta = reserve; // Solo la reserva va al pool
-
-      await client.query(
-        `INSERT INTO keno_fees (game_id, fee_amount, reserve_amount, created_at)
-         VALUES ($1, $2, $3, NOW())`,
-        [gameId, fee, reserve]
-      );
-    } else if (netResult > 0) {
-      // Jugador gano: el payout sale del pool
-      poolDelta = -payout;
-    }
+    // Registrar fee (siempre, cada juego)
+    await client.query(
+      `INSERT INTO keno_fees (game_id, fee_amount, reserve_amount, created_at)
+       VALUES ($1, $2, $3, NOW())`,
+      [gameId, feeAmount, effectiveBet]
+    );
 
     // Actualizar pool balance y estadisticas (GREATEST prevents negative balance)
     await client.query(
@@ -397,7 +386,7 @@ async function playKeno(walletAddress, selectedNumbers, betAmount, commitId = nu
 
     await client.query('COMMIT');
 
-    console.log(`[KenoService] Game ${gameId}: ${spots} spots, ${hits} hits, bet $${bet}, payout $${payout}${capped ? ' (CAPPED)' : ''}`);
+    console.log(`[KenoService] Game ${gameId}: ${spots} spots, ${hits} hits, bet $${bet} (eff $${effectiveBet.toFixed(2)}, fee $${feeAmount.toFixed(2)}), payout $${payout}${capped ? ' (CAPPED)' : ''}`);
 
     return {
       gameId,
@@ -407,6 +396,8 @@ async function playKeno(walletAddress, selectedNumbers, betAmount, commitId = nu
       spots,
       hits,
       betAmount: bet,
+      effectiveBet,
+      feeAmount,
       multiplier: rawMultiplier,
       theoreticalPayout,
       payout,
@@ -552,8 +543,8 @@ async function getConfig() {
     mvp: {
       fixedBet: true,
       payoutCapped: true,
-      dynamicCap: true,  // Nuevo: cap basado en pool
-      feeOnLossOnly: true
+      dynamicCap: true,
+      feeOnEveryBet: true
     }
   };
 }
