@@ -39,6 +39,8 @@ const JS_MIGRATIONS = [
   'add-keno-vrf.js',
   'add-feature-flags.js',
   'add-keno-security-fixes.js',
+  'add-keno-phase3.js',
+  'add-bolita-chain-index.js',
 ];
 
 async function runBaseSchema() {
