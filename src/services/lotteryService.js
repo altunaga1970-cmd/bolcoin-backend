@@ -1,6 +1,7 @@
+const crypto = require('crypto');
 const { getClient, query } = require('../config/database');
 const Draw = require('../models/Draw');
-const { DRAW_STATUS, LOTTERY_RULES, LOTTERY_PRIZES } = require('../config/constants');
+const { DRAW_STATUS, LOTTERY_RULES, LOTTERY_PRIZES, calculateJackpotContribution } = require('../config/constants');
 
 // =================================
 // LOTTERY SERVICE - La Fortuna
@@ -9,13 +10,15 @@ const { DRAW_STATUS, LOTTERY_RULES, LOTTERY_PRIZES } = require('../config/consta
 /**
  * Get or create the next lottery draw
  * Auto-creates Wed/Sat draws if none exist
+ * @param {Object} [txClient] - Optional DB client for transactional use
  */
-async function getNextLotteryDraw() {
+async function getNextLotteryDraw(txClient) {
+    const dbQuery = txClient ? txClient.query.bind(txClient) : query;
     const now = new Date();
 
     // First, look for an existing open/scheduled lottery draw
     // Check draws that are still accepting bets (15 min before scheduled time)
-    const result = await query(`
+    const result = await dbQuery(`
         SELECT * FROM draws
         WHERE draw_type = 'lottery'
         AND status IN ($1, $2)
@@ -40,18 +43,21 @@ async function getNextLotteryDraw() {
     const drawNumber = generateLotteryDrawNumber(nextDrawTime);
 
     try {
-        const newDraw = await Draw.createLottery({
-            draw_number: drawNumber,
-            scheduled_time: nextDrawTime,
-            status: DRAW_STATUS.OPEN
-        });
+        // Use transactional client if available
+        const insertResult = await dbQuery(`
+            INSERT INTO draws (draw_number, scheduled_time, status, draw_type)
+            VALUES ($1, $2, $3, 'lottery')
+            RETURNING *
+        `, [drawNumber, nextDrawTime, DRAW_STATUS.OPEN]);
         console.log(`[LotteryService] Created new lottery draw: ${drawNumber}`);
-        return newDraw;
+        return insertResult.rows[0];
     } catch (error) {
         // If draw already exists (race condition), fetch it
         if (error.message.includes('ya existe') || error.code === '23505') {
-            const existing = await Draw.findByDrawNumber(drawNumber);
-            return existing;
+            const existingResult = await dbQuery(
+                'SELECT * FROM draws WHERE draw_number = $1', [drawNumber]
+            );
+            return existingResult.rows[0] || null;
         }
         throw error;
     }
@@ -176,18 +182,25 @@ async function purchaseTickets(userId, tickets) {
         }
 
         const user = userResult.rows[0];
-        const currentBalance = parseFloat(user.balance);
-
-        // 2. Calculate total cost
         const ticketPrice = LOTTERY_RULES.ticketPrice || 1;
         const totalCost = tickets.length * ticketPrice;
 
-        if (currentBalance < totalCost) {
-            throw new Error(`Balance insuficiente. Tienes ${currentBalance} USDT, necesitas ${totalCost} USDT`);
+        // 2. Deduct balance using DB arithmetic (avoids float precision issues)
+        const balanceResult = await client.query(
+            `UPDATE users SET balance = balance - $1, version = version + 1
+             WHERE id = $2 AND version = $3 AND balance >= $1
+             RETURNING balance`,
+            [totalCost, userId, user.version]
+        );
+
+        if (balanceResult.rowCount !== 1) {
+            throw new Error(`Balance insuficiente o conflicto de concurrencia. Necesitas ${totalCost} USDT`);
         }
 
-        // 3. Get or create the next lottery draw
-        const draw = await getNextLotteryDraw();
+        const newBalance = parseFloat(balanceResult.rows[0].balance);
+
+        // 3. Get or create the next lottery draw (inside transaction)
+        const draw = await getNextLotteryDraw(client);
 
         if (!draw) {
             throw new Error('No hay sorteo de loteria disponible');
@@ -202,23 +215,27 @@ async function purchaseTickets(userId, tickets) {
             throw new Error('El sorteo esta cerrado para nuevos tickets');
         }
 
-        // 4. Validate all tickets
+        // 4. Check max tickets per user per draw
+        const existingTickets = await client.query(
+            'SELECT COUNT(*) FROM lottery_tickets WHERE draw_id = $1 AND user_address = $2',
+            [draw.id, user.wallet_address]
+        );
+        const currentCount = parseInt(existingTickets.rows[0].count);
+        const maxPerDraw = 100;
+        if (currentCount + tickets.length > maxPerDraw) {
+            throw new Error(`Maximo ${maxPerDraw} tickets por sorteo. Ya tienes ${currentCount}`);
+        }
+
+        // 5. Validate all tickets
         for (const ticket of tickets) {
             validateTicketNumbers(ticket.numbers, ticket.keyNumber);
         }
 
-        // 5. Deduct balance
-        const newBalance = currentBalance - totalCost;
-        await client.query(
-            'UPDATE users SET balance = $1, version = version + 1 WHERE id = $2 AND version = $3',
-            [newBalance, userId, user.version]
-        );
-
-        // 6. Create ticket records
+        // 6. Create ticket records with crypto-secure IDs
         const createdTickets = [];
 
         for (const ticket of tickets) {
-            const ticketId = `TKT-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            const ticketId = `TKT-${crypto.randomUUID()}`;
 
             const ticketResult = await client.query(`
                 INSERT INTO lottery_tickets (
@@ -246,6 +263,29 @@ async function purchaseTickets(userId, tickets) {
                 updated_at = NOW()
             WHERE id = $3
         `, [totalCost, tickets.length, draw.id]);
+
+        // 8. Update jackpot (20% of each sale goes to progressive jackpot)
+        const jackpotResult = await client.query(
+            'SELECT jackpot_amount FROM jackpot_status ORDER BY updated_at DESC LIMIT 1 FOR UPDATE'
+        );
+        const currentJackpot = jackpotResult.rows.length > 0
+            ? parseFloat(jackpotResult.rows[0].jackpot_amount)
+            : 0;
+
+        const { toJackpot } = calculateJackpotContribution(totalCost, currentJackpot);
+        if (toJackpot > 0) {
+            if (jackpotResult.rows.length > 0) {
+                await client.query(
+                    'UPDATE jackpot_status SET jackpot_amount = jackpot_amount + $1, updated_at = NOW() WHERE id = (SELECT id FROM jackpot_status ORDER BY updated_at DESC LIMIT 1)',
+                    [toJackpot]
+                );
+            } else {
+                await client.query(
+                    'INSERT INTO jackpot_status (jackpot_amount) VALUES ($1)',
+                    [toJackpot]
+                );
+            }
+        }
 
         await client.query('COMMIT');
 
@@ -343,18 +383,6 @@ async function getJackpotAmount() {
  */
 async function getRecentDrawResults(limit = 4) {
     try {
-        // First check if lottery_numbers column exists
-        const columnCheck = await query(`
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'draws' AND column_name = 'lottery_numbers'
-        `);
-
-        if (columnCheck.rows.length === 0) {
-            // Column doesn't exist yet, return empty array
-            console.log('[LotteryService] lottery_numbers column not found, skipping recent draws');
-            return [];
-        }
-
         const result = await query(`
             SELECT
                 id,

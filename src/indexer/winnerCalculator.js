@@ -1,4 +1,4 @@
-const { query } = require('../config/database');
+const { query, getClient } = require('../config/database');
 const {
     calculateLotteryCategory,
     getLotteryPrize,
@@ -9,163 +9,231 @@ const {
 // CALCULADOR DE GANADORES
 // Para La Fortuna (Lottery 6/49 + clave)
 // Sistema de 5 categorías con premios proporcionales
+// Todas las operaciones envueltas en transacción
 // =================================
 
 class WinnerCalculator {
     /**
      * Calcular ganadores de un sorteo de La Fortuna
+     * Todo el settlement es atómico dentro de una transacción
      * @param {number} drawId - ID del sorteo
      * @returns {Object} - Estadísticas y lista de ganadores
      */
     static async calculateWinners(drawId) {
-        // Obtener datos del sorteo
-        const drawResult = await query(
-            'SELECT * FROM draws WHERE id = $1 AND draw_type = $2',
-            [drawId, 'lottery']
-        );
+        const client = await getClient();
 
-        if (drawResult.rows.length === 0) {
-            throw new Error('Sorteo no encontrado o no es de tipo lottery');
-        }
+        try {
+            await client.query('BEGIN');
 
-        const draw = drawResult.rows[0];
-
-        if (!draw.lottery_numbers || draw.lottery_key === null) {
-            throw new Error('El sorteo no tiene números ganadores definidos');
-        }
-
-        const winningNumbers = JSON.parse(draw.lottery_numbers);
-        const winningKey = draw.lottery_key;
-
-        console.log(`Calculando ganadores para sorteo ${draw.draw_number}`);
-        console.log(`Números ganadores: ${winningNumbers.join(', ')} + ${winningKey}`);
-
-        // Obtener todos los tickets del sorteo
-        const ticketsResult = await query(
-            'SELECT * FROM lottery_tickets WHERE draw_id = $1 AND status = $2',
-            [drawId, 'active']
-        );
-
-        const tickets = ticketsResult.rows;
-        console.log(`Total de tickets: ${tickets.length}`);
-
-        // Obtener total recaudado (para calcular premios proporcionales)
-        const totalPool = tickets.length * 1; // $1 USDT por ticket
-        console.log(`Total recaudado: ${totalPool} USDT`);
-
-        // Obtener jackpot actual (para categoría 1)
-        const jackpotAmount = draw.jackpot_amount || LOTTERY_PRIZES.jackpot.minStart;
-
-        // Primera pasada: contar ganadores por categoría
-        const categoryStats = {};
-        for (let cat = 1; cat <= 5; cat++) {
-            categoryStats[cat] = { count: 0, totalPrize: 0, winnersData: [] };
-        }
-
-        for (const ticket of tickets) {
-            const ticketNumbers = JSON.parse(ticket.numbers);
-            const ticketKey = ticket.key_number;
-
-            const category = calculateLotteryCategory(
-                ticketNumbers,
-                ticketKey,
-                winningNumbers,
-                winningKey
+            // Obtener datos del sorteo con lock
+            const drawResult = await client.query(
+                'SELECT * FROM draws WHERE id = $1 AND draw_type = $2 FOR UPDATE',
+                [drawId, 'lottery']
             );
 
-            if (category > 0) {
-                categoryStats[category].count++;
-                categoryStats[category].winnersData.push({
-                    ticket,
+            if (drawResult.rows.length === 0) {
+                throw new Error('Sorteo no encontrado o no es de tipo lottery');
+            }
+
+            const draw = drawResult.rows[0];
+
+            if (draw.status === 'completed') {
+                throw new Error('El sorteo ya fue resuelto');
+            }
+
+            if (!draw.lottery_numbers || draw.lottery_key === null) {
+                throw new Error('El sorteo no tiene números ganadores definidos');
+            }
+
+            const winningNumbers = Array.isArray(draw.lottery_numbers)
+                ? draw.lottery_numbers
+                : JSON.parse(draw.lottery_numbers);
+            const winningKey = draw.lottery_key;
+
+            console.log(`[WinnerCalculator] Calculando ganadores para sorteo ${draw.draw_number}`);
+            console.log(`[WinnerCalculator] Números ganadores: ${winningNumbers.join(', ')} + ${winningKey}`);
+
+            // Obtener todos los tickets activos del sorteo
+            const ticketsResult = await client.query(
+                'SELECT * FROM lottery_tickets WHERE draw_id = $1 AND status = $2',
+                [drawId, 'active']
+            );
+
+            const tickets = ticketsResult.rows;
+            console.log(`[WinnerCalculator] Total de tickets: ${tickets.length}`);
+
+            if (tickets.length === 0) {
+                // No tickets — mark draw as completed and return
+                await client.query(
+                    "UPDATE draws SET status = 'completed', updated_at = NOW() WHERE id = $1",
+                    [drawId]
+                );
+                await client.query('COMMIT');
+                return {
+                    drawId,
+                    drawNumber: draw.draw_number,
+                    winningNumbers,
+                    winningKey,
+                    totalTickets: 0,
+                    totalPool: 0,
+                    totalWinners: 0,
+                    totalPrize: 0,
+                    categoryStats: {},
+                    winners: []
+                };
+            }
+
+            // Obtener total recaudado
+            const totalPool = tickets.length * 1; // $1 USDT por ticket
+            console.log(`[WinnerCalculator] Total recaudado: ${totalPool} USDT`);
+
+            // Obtener jackpot actual
+            const jackpotResult = await client.query(
+                'SELECT jackpot_amount FROM jackpot_status ORDER BY updated_at DESC LIMIT 1 FOR UPDATE'
+            );
+            const jackpotAmount = jackpotResult.rows.length > 0
+                ? parseFloat(jackpotResult.rows[0].jackpot_amount)
+                : 0;
+
+            // Primera pasada: contar ganadores por categoría
+            const categoryStats = {};
+            for (let cat = 1; cat <= 5; cat++) {
+                categoryStats[cat] = { count: 0, totalPrize: 0, winnersData: [] };
+            }
+
+            for (const ticket of tickets) {
+                const ticketNumbers = typeof ticket.numbers === 'string'
+                    ? JSON.parse(ticket.numbers)
+                    : ticket.numbers;
+                const ticketKey = ticket.key_number;
+
+                const category = calculateLotteryCategory(
                     ticketNumbers,
                     ticketKey,
-                    matches: this.countMatches(ticketNumbers, winningNumbers),
-                    key_match: ticketKey === winningKey
-                });
-            }
-        }
+                    winningNumbers,
+                    winningKey
+                );
 
-        // Segunda pasada: calcular premios proporcionales
-        const winners = [];
-
-        for (let cat = 1; cat <= 5; cat++) {
-            const catData = categoryStats[cat];
-            if (catData.count === 0) continue;
-
-            // Calcular premio por ganador en esta categoría
-            let prizePerWinner;
-            if (cat === 1) {
-                // Jackpot: se divide entre todos los ganadores de cat 1
-                prizePerWinner = jackpotAmount / catData.count;
-            } else {
-                // Otras categorías: (totalPool * BPS / 10000) / numGanadores
-                prizePerWinner = getLotteryPrize(cat, 0, totalPool, catData.count);
+                if (category > 0) {
+                    categoryStats[category].count++;
+                    categoryStats[category].winnersData.push({
+                        ticket,
+                        ticketNumbers,
+                        ticketKey,
+                        matches: this.countMatches(ticketNumbers, winningNumbers),
+                        key_match: ticketKey === winningKey
+                    });
+                }
             }
 
-            // Redondear a 2 decimales
-            prizePerWinner = Math.floor(prizePerWinner * 100) / 100;
+            // Segunda pasada: calcular premios proporcionales y crear ganadores
+            const winners = [];
+            let totalPrize = 0;
 
-            for (const winnerData of catData.winnersData) {
-                winners.push({
-                    draw_id: drawId,
-                    user_address: winnerData.ticket.user_address,
-                    ticket_id: winnerData.ticket.ticket_id,
-                    ticket_numbers: winnerData.ticketNumbers,
-                    ticket_key: winnerData.ticketKey,
-                    matches: winnerData.matches,
-                    key_match: winnerData.key_match,
-                    category: cat,
-                    prize_amount: prizePerWinner
-                });
+            for (let cat = 1; cat <= 5; cat++) {
+                const catData = categoryStats[cat];
+                if (catData.count === 0) continue;
 
-                categoryStats[cat].totalPrize += prizePerWinner;
+                let prizePerWinner;
+                if (cat === 1) {
+                    // Jackpot: se divide entre todos los ganadores de cat 1
+                    prizePerWinner = jackpotAmount / catData.count;
+                } else {
+                    // Otras categorías: (totalPool * BPS / 10000) / numGanadores
+                    prizePerWinner = getLotteryPrize(cat, 0, totalPool, catData.count);
+                }
 
-                // Actualizar estado del ticket
-                await query(
-                    'UPDATE lottery_tickets SET status = $1 WHERE id = $2',
-                    ['winner', winnerData.ticket.id]
+                // Redondear a 2 decimales (floor para no exceder pool)
+                prizePerWinner = Math.floor(prizePerWinner * 100) / 100;
+
+                for (const winnerData of catData.winnersData) {
+                    winners.push({
+                        draw_id: drawId,
+                        user_address: winnerData.ticket.user_address,
+                        ticket_id: winnerData.ticket.ticket_id,
+                        ticket_numbers: winnerData.ticketNumbers,
+                        ticket_key: winnerData.ticketKey,
+                        matches: winnerData.matches,
+                        key_match: winnerData.key_match,
+                        category: cat,
+                        prize_amount: prizePerWinner
+                    });
+
+                    categoryStats[cat].totalPrize += prizePerWinner;
+                    totalPrize += prizePerWinner;
+
+                    // Actualizar estado del ticket a 'won' (matches DB CHECK constraint)
+                    await client.query(
+                        'UPDATE lottery_tickets SET status = $1, matches = $2, key_match = $3, prize_amount = $4 WHERE id = $5',
+                        ['won', winnerData.matches, winnerData.key_match, prizePerWinner, winnerData.ticket.id]
+                    );
+                }
+            }
+
+            // Marcar todos los tickets perdedores en batch (matches DB CHECK 'lost')
+            await client.query(
+                "UPDATE lottery_tickets SET status = 'lost' WHERE draw_id = $1 AND status = 'active'",
+                [drawId]
+            );
+
+            // Guardar ganadores en la BD
+            for (const winner of winners) {
+                await this.saveWinner(client, winner);
+            }
+
+            // Disbursement: acreditar premios al balance de los ganadores
+            for (const winner of winners) {
+                if (winner.prize_amount > 0) {
+                    await client.query(
+                        'UPDATE users SET balance = balance + $1 WHERE wallet_address = $2',
+                        [winner.prize_amount, winner.user_address.toLowerCase()]
+                    );
+                }
+            }
+
+            // Si hubo ganador de jackpot (cat 1), resetear jackpot a 0
+            if (categoryStats[1].count > 0) {
+                await client.query(
+                    'UPDATE jackpot_status SET jackpot_amount = 0, last_won_at = NOW(), last_won_by = $1, last_won_draw_id = $2, updated_at = NOW() WHERE id = (SELECT id FROM jackpot_status ORDER BY updated_at DESC LIMIT 1)',
+                    [categoryStats[1].winnersData[0].ticket.user_address, drawId]
                 );
             }
+
+            // Marcar draw como completado
+            await client.query(`
+                UPDATE draws
+                SET status = 'completed',
+                    winners_count = $1,
+                    total_payouts_amount = $2,
+                    updated_at = NOW()
+                WHERE id = $3
+            `, [winners.length, totalPrize, drawId]);
+
+            await client.query('COMMIT');
+
+            console.log(`[WinnerCalculator] Ganadores encontrados: ${winners.length}`);
+            console.log(`[WinnerCalculator] Premio total: ${totalPrize} USDT`);
+
+            return {
+                drawId,
+                drawNumber: draw.draw_number,
+                winningNumbers,
+                winningKey,
+                totalTickets: tickets.length,
+                totalPool,
+                totalWinners: winners.length,
+                totalPrize,
+                categoryStats,
+                winners
+            };
+
+        } catch (error) {
+            await client.query('ROLLBACK');
+            console.error(`[WinnerCalculator] Error calculando ganadores del sorteo ${drawId}:`, error);
+            throw error;
+        } finally {
+            client.release();
         }
-
-        // Marcar tickets perdedores
-        for (const ticket of tickets) {
-            const ticketNumbers = JSON.parse(ticket.numbers);
-            const ticketKey = ticket.key_number;
-            const category = calculateLotteryCategory(ticketNumbers, ticketKey, winningNumbers, winningKey);
-
-            if (category === 0) {
-                await query(
-                    'UPDATE lottery_tickets SET status = $1 WHERE id = $2',
-                    ['loser', ticket.id]
-                );
-            }
-        }
-
-        // Guardar ganadores en la BD
-        for (const winner of winners) {
-            await this.saveWinner(winner);
-        }
-
-        // Calcular totales
-        const totalWinners = winners.length;
-        const totalPrize = winners.reduce((sum, w) => sum + w.prize_amount, 0);
-
-        console.log(`Ganadores encontrados: ${totalWinners}`);
-        console.log(`Premio total: ${totalPrize} USDT`);
-
-        return {
-            drawId,
-            drawNumber: draw.draw_number,
-            winningNumbers,
-            winningKey,
-            totalTickets: tickets.length,
-            totalPool,
-            totalWinners,
-            totalPrize,
-            categoryStats,
-            winners
-        };
     }
 
     /**
@@ -176,9 +244,9 @@ class WinnerCalculator {
     }
 
     /**
-     * Guardar ganador en la BD
+     * Guardar ganador en la BD (transactional)
      */
-    static async saveWinner(winner) {
+    static async saveWinner(client, winner) {
         const text = `
             INSERT INTO lottery_winners
             (draw_id, user_address, ticket_id, ticket_numbers, ticket_key,
@@ -201,7 +269,7 @@ class WinnerCalculator {
             winner.prize_amount
         ];
 
-        const result = await query(text, values);
+        const result = await client.query(text, values);
         return result.rows[0];
     }
 
@@ -267,7 +335,6 @@ class WinnerCalculator {
         `;
         const result = await query(text, [drawId]);
 
-        // Agregar info de categoría
         const categoryNames = {
             1: '6 + Clave (Jackpot)',
             2: '6 Aciertos (40%)',
