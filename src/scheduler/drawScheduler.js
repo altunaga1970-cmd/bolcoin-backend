@@ -30,29 +30,51 @@ class DrawScheduler {
 
     /**
      * Crear sorteos de La Bolita
+     *
+     * Design: scheduled_time = when betting CLOSES and results are drawn.
+     * Draws are created as 'open' immediately so users can bet right away.
+     * The drawCloser will close them CLOSE_BEFORE_DRAW_MINUTES before scheduled_time.
+     *
+     * Always ensures the next 3 upcoming draws exist and are open for betting.
      */
     async createBolitaDraws(now, hoursAhead) {
         const drawTimes = SCHEDULER_CONFIG.BOLITA_DRAW_TIMES;
-        const targetDate = new Date(now.getTime() + hoursAhead * 60 * 60 * 1000);
+        const closeBefore = SCHEDULER_CONFIG.CLOSE_BEFORE_DRAW_MINUTES;
 
+        // Build a sorted list of all candidate draw times for today and tomorrow
+        const candidates = [];
         for (const timeStr of drawTimes) {
             const [hours, minutes] = timeStr.split(':').map(Number);
 
-            // Crear para hoy
+            // Today
             const todayDraw = new Date(now);
             todayDraw.setUTCHours(hours, minutes, 0, 0);
+            candidates.push(new Date(todayDraw));
 
-            if (todayDraw > now && todayDraw <= targetDate) {
-                await this.createDrawIfNotExists(todayDraw, 'bolita');
-            }
-
-            // Crear para mañana
+            // Tomorrow
             const tomorrowDraw = new Date(todayDraw);
             tomorrowDraw.setUTCDate(tomorrowDraw.getUTCDate() + 1);
+            candidates.push(new Date(tomorrowDraw));
 
-            if (tomorrowDraw <= targetDate) {
-                await this.createDrawIfNotExists(tomorrowDraw, 'bolita');
-            }
+            // Day after tomorrow (safety net)
+            const dayAfter = new Date(tomorrowDraw);
+            dayAfter.setUTCDate(dayAfter.getUTCDate() + 1);
+            candidates.push(new Date(dayAfter));
+        }
+
+        // Sort chronologically
+        candidates.sort((a, b) => a.getTime() - b.getTime());
+
+        // Filter: only keep draws whose close window hasn't passed yet
+        // A draw is still relevant if: scheduled_time - closeBefore > now
+        const closeBufferMs = closeBefore * 60 * 1000;
+        const upcoming = candidates.filter(d => d.getTime() - closeBufferMs > now.getTime());
+
+        // Create the next 3 upcoming draws as 'open' immediately
+        const drawsToCreate = upcoming.slice(0, 3);
+
+        for (const drawTime of drawsToCreate) {
+            await this.createDrawIfNotExists(drawTime, 'bolita');
         }
     }
 
@@ -90,6 +112,8 @@ class DrawScheduler {
             }
 
             // Crear sorteo
+            // La Bolita draws are created as 'open' immediately so users can bet.
+            // Lottery draws stay 'scheduled' until their time.
             let draw;
             if (drawType === 'lottery') {
                 draw = await Draw.createLottery({
@@ -101,7 +125,7 @@ class DrawScheduler {
                 draw = await Draw.create({
                     draw_number: drawNumber,
                     scheduled_time: scheduledTime,
-                    status: DRAW_STATUS.SCHEDULED
+                    status: DRAW_STATUS.OPEN
                 });
             }
 

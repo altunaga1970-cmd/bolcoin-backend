@@ -153,6 +153,76 @@ async function updateDraw(id, updates) {
 }
 
 /**
+ * Refund all bets for a draw
+ * Credits bet amounts back to user balances within a transaction
+ */
+async function refundDrawBets(drawId) {
+    const { getClient } = require('../config/database');
+    const client = await getClient();
+
+    try {
+        await client.query('BEGIN');
+
+        // Get all pending bets for this draw
+        const betsResult = await client.query(
+            `SELECT id, user_id, amount, game_type FROM bets
+             WHERE draw_id = $1 AND status = 'pending'
+             FOR UPDATE`,
+            [drawId]
+        );
+
+        if (betsResult.rows.length === 0) {
+            await client.query('COMMIT');
+            return { refunded: 0, totalAmount: 0 };
+        }
+
+        let totalRefunded = 0;
+
+        for (const bet of betsResult.rows) {
+            const refundAmount = Math.round(parseFloat(bet.amount) * 100) / 100;
+
+            // Credit user balance with optimistic locking
+            await client.query(
+                `UPDATE users SET balance = balance + $1, version = version + 1
+                 WHERE id = $2`,
+                [refundAmount, bet.user_id]
+            );
+
+            // Mark bet as refunded
+            await client.query(
+                `UPDATE bets SET status = 'refunded', updated_at = NOW()
+                 WHERE id = $1`,
+                [bet.id]
+            );
+
+            totalRefunded += refundAmount;
+        }
+
+        // Clear number exposure for this draw
+        await client.query(
+            'DELETE FROM number_exposure WHERE draw_id = $1',
+            [drawId]
+        );
+
+        await client.query('COMMIT');
+
+        console.log(`[DrawService] Refunded ${betsResult.rows.length} bets for draw ${drawId}, total: ${totalRefunded} USDT`);
+
+        return {
+            refunded: betsResult.rows.length,
+            totalAmount: Math.round(totalRefunded * 100) / 100
+        };
+
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error(`[DrawService] Error refunding draw ${drawId}:`, error.message);
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+/**
  * Cancelar sorteo
  */
 async function cancelDraw(id) {
@@ -176,8 +246,7 @@ async function cancelDraw(id) {
     const betsCount = parseInt(betsResult.rows[0].count);
 
     if (betsCount > 0) {
-        // TODO: Implementar reembolso de apuestas
-        throw new Error('No se puede cancelar un sorteo con apuestas. Implementar reembolso primero.');
+        await refundDrawBets(id);
     }
 
     return await Draw.cancel(id);
@@ -281,6 +350,7 @@ module.exports = {
     closeDraw,
     updateDraw,
     cancelDraw,
+    refundDrawBets,
     deleteDraw,
     listDraws,
     isDrawOpenForBets,

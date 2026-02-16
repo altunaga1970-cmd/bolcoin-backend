@@ -49,12 +49,13 @@ class Draw {
 
     /**
      * Obtener sorteos activos (abiertos para apuestas)
+     * Returns draws with 'open' or 'scheduled' status.
+     * scheduled_time represents when results are drawn, not when betting starts.
      */
     static async getActive() {
         const text = `
             SELECT * FROM draws
             WHERE status IN ($1, $2)
-            AND scheduled_time > NOW()
             ORDER BY scheduled_time ASC
         `;
         const result = await query(text, [DRAW_STATUS.SCHEDULED, DRAW_STATUS.OPEN]);
@@ -519,10 +520,10 @@ class Draw {
         const text = `
             SELECT * FROM draws
             WHERE status = 'open'
-            AND scheduled_time <= NOW() + INTERVAL '${minutesBefore} minutes'
+            AND scheduled_time <= NOW() + $1 * INTERVAL '1 minute'
             ORDER BY scheduled_time ASC
         `;
-        const result = await query(text);
+        const result = await query(text, [minutesBefore]);
         return result.rows;
     }
 
@@ -566,6 +567,23 @@ class Draw {
      * Establecer números ganadores de La Fortuna
      */
     static async setLotteryResults(id, numbers, keyNumber) {
+        // Validate inputs
+        if (!Array.isArray(numbers) || numbers.length !== 6) {
+            throw new Error('Se requieren exactamente 6 numeros');
+        }
+        const uniqueNums = new Set(numbers);
+        if (uniqueNums.size !== 6) {
+            throw new Error('Los numeros deben ser unicos');
+        }
+        for (const n of numbers) {
+            if (!Number.isInteger(n) || n < 1 || n > 49) {
+                throw new Error('Numeros deben ser enteros del 1 al 49');
+            }
+        }
+        if (!Number.isInteger(keyNumber) || keyNumber < 0 || keyNumber > 9) {
+            throw new Error('Numero clave debe ser entero del 0 al 9');
+        }
+
         const text = `
             UPDATE draws
             SET lottery_numbers = $1,

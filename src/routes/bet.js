@@ -1,4 +1,5 @@
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const router = express.Router();
 const betController = require('../controllers/betController');
 const { authenticateWallet } = require('../middleware/web3Auth');
@@ -10,6 +11,17 @@ const { requireFlag } = require('../middleware/featureFlag');
 // Protegidas por feature flag 'game_bolita'
 // =================================
 
+// Rate limiter for bet placement: max 10 per minute per wallet
+const betPlaceLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 10,
+    keyGenerator: (req) => req.user?.address || req.headers['x-wallet-address'] || 'anonymous',
+    validate: { xForwardedForHeader: false },
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, message: 'Demasiadas apuestas. Intenta de nuevo en un minuto.' }
+});
+
 // Todas las rutas requieren autenticacion de wallet + feature flag
 router.use(requireFlag('game_bolita'));
 router.use(authenticateWallet);
@@ -19,7 +31,7 @@ router.use(authenticateWallet);
  * Realizar apuestas
  * Body: { draw_id, bets: [{ game_type, number, amount }] }
  */
-router.post('/place', validatePlaceBet, betController.placeBets);
+router.post('/place', betPlaceLimiter, validatePlaceBet, betController.placeBets);
 
 /**
  * GET /api/bets/my-bets
