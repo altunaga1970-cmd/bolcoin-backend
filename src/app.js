@@ -26,6 +26,7 @@ const bankrollRoutes = require('./routes/bankroll');
 const lotteryRoutes = require('./routes/lottery');
 const kenoRoutes = require('./routes/keno');
 const adminBolitaRoutes = require('./routes/adminBolita');
+const bingoRoutes = require('./routes/bingo');
 // MVP: Nuevas rutas
 const publicConfigRoutes = require('./routes/publicConfig');
 const adminFlagsRoutes = require('./routes/adminFlags');
@@ -468,6 +469,7 @@ app.use('/api/bankroll', bankrollRoutes);
 app.use('/api/lottery', lotteryRoutes);
 app.use('/api/keno', kenoRoutes);
 app.use('/api/admin/bolita', adminBolitaRoutes);
+app.use('/api/bingo', bingoRoutes);
 // app.use('/api/user', userRoutes);
 
 // =================================
@@ -488,6 +490,24 @@ if (process.env.BOLITA_CONTRACT_ADDRESS) {
     bolitaIndexer.start().catch(err => {
         console.error('[App] Failed to start Bolita indexer:', err.message);
     });
+}
+
+// =================================
+// START BINGO EVENT SERVICE (if configured) or OFF-CHAIN SCHEDULER
+// =================================
+if (process.env.BINGO_CONTRACT_ADDRESS) {
+    const { bingoEventService } = require('./services/bingoEventService');
+    bingoEventService.start().catch(err => {
+        console.error('[App] Failed to start Bingo event service:', err.message);
+    });
+} else {
+    // Off-chain mode: start auto-round scheduler after a short delay (let DB init finish)
+    setTimeout(() => {
+        const bingoScheduler = require('./services/bingoScheduler');
+        bingoScheduler.start().catch(err => {
+            console.error('[App] Failed to start Bingo scheduler:', err.message);
+        });
+    }, 3000);
 }
 
 // =================================

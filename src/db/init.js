@@ -41,6 +41,7 @@ const JS_MIGRATIONS = [
   'add-keno-security-fixes.js',
   'add-keno-phase3.js',
   'add-bolita-chain-index.js',
+  'add-bingo-tables.js',
 ];
 
 async function runBaseSchema() {

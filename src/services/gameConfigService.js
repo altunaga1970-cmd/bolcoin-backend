@@ -59,7 +59,17 @@ const MVP_DEFAULTS = {
   keno_commit_ttl_seconds: 300,
   // Sistema
   contract_min_balance: 100,
-  rng_method: 'sha256_server_seed'
+  rng_method: 'sha256_server_seed',
+  // Bingo
+  bingo_enabled: true,
+  bingo_card_price: 1,
+  bingo_fee_bps: 1000,         // 10%
+  bingo_reserve_bps: 1000,     // 10%
+  bingo_line_prize_bps: 1000,  // 10% of winner pot
+  bingo_bingo_prize_bps: 7000, // 70% of winner pot
+  bingo_jackpot_ball_threshold: 25,
+  bingo_max_cards_per_user: 4,
+  bingo_auto_resolve_enabled: true,
 };
 
 /**
@@ -394,6 +404,27 @@ async function getPublicConfig() {
 }
 
 /**
+ * Obtener configuracion de Bingo
+ */
+async function getBingoConfig() {
+  const config = await getAllConfig();
+  return {
+    cardPrice: config.bingo_card_price ?? MVP_DEFAULTS.bingo_card_price,
+    feeBps: config.bingo_fee_bps ?? MVP_DEFAULTS.bingo_fee_bps,
+    reserveBps: config.bingo_reserve_bps ?? MVP_DEFAULTS.bingo_reserve_bps,
+    linePrizeBps: config.bingo_line_prize_bps ?? MVP_DEFAULTS.bingo_line_prize_bps,
+    bingoPrizeBps: config.bingo_bingo_prize_bps ?? MVP_DEFAULTS.bingo_bingo_prize_bps,
+    jackpotBallThreshold: config.bingo_jackpot_ball_threshold ?? MVP_DEFAULTS.bingo_jackpot_ball_threshold,
+    maxCardsPerUser: config.bingo_max_cards_per_user ?? MVP_DEFAULTS.bingo_max_cards_per_user,
+    autoResolveEnabled: config.bingo_auto_resolve_enabled ?? MVP_DEFAULTS.bingo_auto_resolve_enabled,
+    totalBalls: 75,
+    cardRows: 3,
+    cardCols: 5,
+    numbersPerCard: 15,
+  };
+}
+
+/**
  * Get loss limit configuration
  * Values of 0 mean no limit (backward compatible)
  */
@@ -426,5 +457,7 @@ module.exports = {
   invalidateCache,
   // Loss limits
   getLossLimitConfig,
+  // Bingo config
+  getBingoConfig,
   MVP_DEFAULTS
 };
