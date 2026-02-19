@@ -382,7 +382,25 @@ if (process.env.NODE_ENV === 'development') {
         }
     });
 
-    console.log('[Dev] Development routes enabled: POST /api/dev/give-balance, /api/dev/set-pool');
+    // Enable bingo in game_config
+    app.post('/api/dev/enable-bingo', async (req, res) => {
+        try {
+            const client = await getClient();
+            await client.query(`
+                INSERT INTO game_config (key, value, value_type, description)
+                VALUES ('bingo_enabled', 'true', 'boolean', 'Enable/disable Bingo game globally')
+                ON CONFLICT (key)
+                DO UPDATE SET value = 'true', updated_at = CURRENT_TIMESTAMP
+            `);
+            client.release();
+            res.json({ success: true, message: 'Bingo enabled successfully' });
+        } catch (error) {
+            console.error('Error enabling bingo:', error);
+            res.status(500).json({ success: false, message: error.message });
+        }
+    });
+
+    console.log('[Dev] Development routes enabled: POST /api/dev/give-balance, /api/dev/set-pool, /api/dev/enable-bingo');
 
     // Debug endpoint to test betting with blockchain
     app.post('/api/dev/test-bet', require('../src/middleware/web3Auth').authenticateWallet, async (req, res) => {
