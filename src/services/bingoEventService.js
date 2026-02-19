@@ -254,7 +254,7 @@ class BingoEventService {
 
   async _onRoundResolved(roundId, lineWinner, lineWinnerBall, bingoWinner, bingoWinnerBall, jackpotWon, jackpotPaid) {
     const id = Number(roundId);
-    const jpPaid = parseFloat(ethers.formatUnits(jackpotPaid, TOKEN_DECIMALS));
+    const jpPaid = ethers.formatUnits(jackpotPaid, TOKEN_DECIMALS);
 
     // Sync full financial data from contract
     await this._syncRoundFromContract(id);
@@ -264,7 +264,7 @@ class BingoEventService {
 
   async _onRoundNoWinner(roundId, toJackpot) {
     const id = Number(roundId);
-    const jpAmount = parseFloat(ethers.formatUnits(toJackpot, TOKEN_DECIMALS));
+    const jpAmount = ethers.formatUnits(toJackpot, TOKEN_DECIMALS);
 
     await pool.query(
       `UPDATE bingo_rounds SET status = 'resolved', updated_at = NOW()
@@ -293,9 +293,17 @@ class BingoEventService {
       const { getBingoContractReadOnly } = require('../chain/bingoProvider');
       const contract = getBingoContractReadOnly();
 
-      const results = await contract.getRoundResults(roundId);
-      const [lineWinner, lineWinnerBall, bingoWinner, bingoWinnerBall,
-             jackpotWon, jackpotPaid, feeAmount, reserveAmount, linePrize, bingoPrize] = results;
+      // getRoundResults returns: (address[] lineWinners, uint8 lineWinnerBall,
+      //   address[] bingoWinners, uint8 bingoWinnerBall, bool jackpotWon,
+      //   uint256 jackpotPaid, uint256 feeAmount, uint256 reserveAmount,
+      //   uint256 linePrize, uint256 bingoPrize)
+      const [lineWinners, lineWinnerBall, bingoWinners, bingoWinnerBall,
+             jackpotWon, jackpotPaid, feeAmount, reserveAmount, linePrize, bingoPrize] =
+        await contract.getRoundResults(roundId);
+
+      // Store first winner address for backward-compat single-address column
+      const lineWinnerAddr  = lineWinners.length > 0  ? lineWinners[0].toLowerCase()  : null;
+      const bingoWinnerAddr = bingoWinners.length > 0 ? bingoWinners[0].toLowerCase() : null;
 
       await pool.query(
         `UPDATE bingo_rounds SET
@@ -308,17 +316,21 @@ class BingoEventService {
            bingo_prize = $6,
            jackpot_won = $7,
            jackpot_paid = $8,
+           line_winner_ball = $9,
+           bingo_winner_ball = $10,
            updated_at = NOW()
-         WHERE round_id = $9`,
+         WHERE round_id = $11 AND status NOT IN ('cancelled', 'open', 'closed')`,
         [
-          lineWinner !== ethers.ZeroAddress ? lineWinner.toLowerCase() : null,
-          bingoWinner !== ethers.ZeroAddress ? bingoWinner.toLowerCase() : null,
-          parseFloat(ethers.formatUnits(feeAmount, TOKEN_DECIMALS)),
-          parseFloat(ethers.formatUnits(reserveAmount, TOKEN_DECIMALS)),
-          parseFloat(ethers.formatUnits(linePrize, TOKEN_DECIMALS)),
-          parseFloat(ethers.formatUnits(bingoPrize, TOKEN_DECIMALS)),
+          lineWinnerAddr,
+          bingoWinnerAddr,
+          ethers.formatUnits(feeAmount, TOKEN_DECIMALS),
+          ethers.formatUnits(reserveAmount, TOKEN_DECIMALS),
+          ethers.formatUnits(linePrize, TOKEN_DECIMALS),
+          ethers.formatUnits(bingoPrize, TOKEN_DECIMALS),
           jackpotWon,
-          parseFloat(ethers.formatUnits(jackpotPaid, TOKEN_DECIMALS)),
+          ethers.formatUnits(jackpotPaid, TOKEN_DECIMALS),
+          Number(lineWinnerBall),
+          Number(bingoWinnerBall),
           roundId,
         ]
       );

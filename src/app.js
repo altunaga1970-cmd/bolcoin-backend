@@ -4,6 +4,26 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
+// ── Production secret guard (F-10) ────────────────────────────────────────
+// Hardhat default accounts are publicly known — reject them in production.
+if (process.env.NODE_ENV === 'production') {
+  const HARDHAT_KEYS = new Set([
+    '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80',
+    '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d',
+    '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a',
+  ]);
+  const opKey = (process.env.OPERATOR_PRIVATE_KEY || '').toLowerCase();
+  if (HARDHAT_KEYS.has(opKey)) {
+    console.error('[FATAL] OPERATOR_PRIVATE_KEY is a well-known Hardhat test key. Refusing to start in production.');
+    process.exit(1);
+  }
+  if (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.includes('dev') || process.env.SESSION_SECRET.includes('local')) {
+    console.error('[FATAL] SESSION_SECRET appears to be a development value. Refusing to start in production.');
+    process.exit(1);
+  }
+}
+// ──────────────────────────────────────────────────────────────────────────
+
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 const { geoBlockMiddleware } = require('./middleware/geoblock');
 
@@ -496,10 +516,17 @@ if (process.env.BOLITA_CONTRACT_ADDRESS) {
 // START BINGO EVENT SERVICE (if configured) or OFF-CHAIN SCHEDULER
 // =================================
 if (process.env.BINGO_CONTRACT_ADDRESS) {
+    // On-chain mode: event indexer + on-chain room scheduler
     const { bingoEventService } = require('./services/bingoEventService');
     bingoEventService.start().catch(err => {
         console.error('[App] Failed to start Bingo event service:', err.message);
     });
+    setTimeout(() => {
+        const bingoSchedulerOnChain = require('./services/bingoSchedulerOnChain');
+        bingoSchedulerOnChain.start().catch(err => {
+            console.error('[App] Failed to start Bingo on-chain scheduler:', err.message);
+        });
+    }, 3000);
 } else {
     // Off-chain mode: start auto-round scheduler after a short delay (let DB init finish)
     setTimeout(() => {

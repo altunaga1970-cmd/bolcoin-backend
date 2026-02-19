@@ -261,10 +261,10 @@ describe('bingoResolverService', () => {
       expect(feeBps + reserveBps + potBps).toBe(10000);
     });
 
-    it('pot split: line 10% + bingo 70% sums to 80% of pot', () => {
-      const linePrizeBps = 1000;
-      const bingoPrizeBps = 7000;
-      expect(linePrizeBps + bingoPrizeBps).toBe(8000);
+    it('pot split: line 15% + bingo 85% sums to 100% of pot', () => {
+      const linePrizeBps = 1500;
+      const bingoPrizeBps = 8500;
+      expect(linePrizeBps + bingoPrizeBps).toBe(10000);
     });
 
     it('revenue distribution example: 100 USDT revenue', () => {

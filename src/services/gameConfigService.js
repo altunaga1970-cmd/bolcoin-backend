@@ -65,8 +65,8 @@ const MVP_DEFAULTS = {
   bingo_card_price: 1,
   bingo_fee_bps: 1000,         // 10%
   bingo_reserve_bps: 1000,     // 10%
-  bingo_line_prize_bps: 1000,  // 10% of winner pot
-  bingo_bingo_prize_bps: 7000, // 70% of winner pot
+  bingo_line_prize_bps: 1500,  // 15% of winner pot
+  bingo_bingo_prize_bps: 8500, // 85% of winner pot
   bingo_jackpot_ball_threshold: 25,
   bingo_max_cards_per_user: 4,
   bingo_auto_resolve_enabled: true,

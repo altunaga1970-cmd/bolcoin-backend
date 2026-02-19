@@ -111,22 +111,16 @@ function checkCard(cardNumbers, drawnBalls) {
 
 /**
  * Detect winners across all cards by simulating ball-by-ball draws.
- * First card to complete a row = line winner.
- * First card to complete all 15 = bingo winner.
- * Ties: lowest cardId wins.
+ * First card(s) to complete a row = line winner(s).
+ * First card(s) to complete all 15 = bingo winner(s).
+ * If multiple cards hit the same milestone at the same ball number, ALL are co-winners
+ * and the prize is split equally among them.
  *
  * @param {Array<{cardId: number, owner: string, numbers: number[]}>} cards
  * @param {number[]} drawnBalls - 75-element array
- * @returns {{ lineWinner, lineWinnerBall, lineWinnerCardId, bingoWinner, bingoWinnerBall, bingoWinnerCardId }}
+ * @returns {{ lineWinners, lineWinnerBall, bingoWinners, bingoWinnerBall }}
  */
 function detectWinners(cards, drawnBalls) {
-  let lineWinner = ZERO_ADDRESS;
-  let lineWinnerBall = 0;
-  let lineWinnerCardId = null;
-  let bingoWinner = ZERO_ADDRESS;
-  let bingoWinnerBall = 0;
-  let bingoWinnerCardId = null;
-
   // Pre-compute card results
   const results = [];
   for (const card of cards) {
@@ -134,55 +128,68 @@ function detectWinners(cards, drawnBalls) {
     results.push({ ...result, cardId: card.cardId, owner: card.owner });
   }
 
-  // Find earliest line winner (lowest ball #, then lowest cardId for ties)
+  // Find earliest line ball number
+  let lineWinnerBall = 0;
   for (const r of results) {
     if (r.lineHitBall === null) continue;
-    if (
-      lineWinnerBall === 0 ||
-      r.lineHitBall < lineWinnerBall ||
-      (r.lineHitBall === lineWinnerBall && r.cardId < lineWinnerCardId)
-    ) {
-      lineWinner = r.owner;
+    if (lineWinnerBall === 0 || r.lineHitBall < lineWinnerBall) {
       lineWinnerBall = r.lineHitBall;
-      lineWinnerCardId = r.cardId;
     }
   }
 
-  // Find earliest bingo winner (lowest ball #, then lowest cardId for ties)
+  // Collect ALL cards that hit line at that earliest ball, sorted by cardId (tie-breaking)
+  const lineWinners = lineWinnerBall > 0
+    ? results
+        .filter(r => r.lineHitBall === lineWinnerBall)
+        .map(r => ({ owner: r.owner, cardId: r.cardId }))
+        .sort((a, b) => a.cardId - b.cardId)
+    : [];
+
+  // Find earliest bingo ball number
+  let bingoWinnerBall = 0;
   for (const r of results) {
     if (r.bingoHitBall === null) continue;
-    if (
-      bingoWinnerBall === 0 ||
-      r.bingoHitBall < bingoWinnerBall ||
-      (r.bingoHitBall === bingoWinnerBall && r.cardId < bingoWinnerCardId)
-    ) {
-      bingoWinner = r.owner;
+    if (bingoWinnerBall === 0 || r.bingoHitBall < bingoWinnerBall) {
       bingoWinnerBall = r.bingoHitBall;
-      bingoWinnerCardId = r.cardId;
     }
   }
 
+  // Collect ALL cards that hit bingo at that earliest ball, sorted by cardId (tie-breaking)
+  const bingoWinners = bingoWinnerBall > 0
+    ? results
+        .filter(r => r.bingoHitBall === bingoWinnerBall)
+        .map(r => ({ owner: r.owner, cardId: r.cardId }))
+        .sort((a, b) => a.cardId - b.cardId)
+    : [];
+
   return {
-    lineWinner,
+    lineWinners,
     lineWinnerBall,
-    lineWinnerCardId,
-    bingoWinner,
+    bingoWinners,
     bingoWinnerBall,
-    bingoWinnerCardId,
+    // Legacy compat: first winner (for backward-compatible fields)
+    lineWinner: lineWinners.length > 0 ? lineWinners[0].owner : ZERO_ADDRESS,
+    lineWinnerCardId: lineWinners.length > 0 ? lineWinners[0].cardId : null,
+    bingoWinner: bingoWinners.length > 0 ? bingoWinners[0].owner : ZERO_ADDRESS,
+    bingoWinnerCardId: bingoWinners.length > 0 ? bingoWinners[0].cardId : null,
   };
 }
 
 /**
  * Sign EIP-712 ResolveRound message.
  *
- * @param {number} roundId
- * @param {string} lineWinner - address
- * @param {number} lineWinnerBall
- * @param {string} bingoWinner - address
- * @param {number} bingoWinnerBall
- * @returns {Promise<string>} signature
+ * Contract typehash:
+ *   ResolveRound(uint256 roundId,address[] lineWinners,uint8 lineWinnerBall,
+ *                address[] bingoWinners,uint8 bingoWinnerBall)
+ *
+ * @param {number}   roundId
+ * @param {string[]} lineWinners    - array of winner addresses (empty if no line)
+ * @param {number}   lineWinnerBall - 0 if no line winner
+ * @param {string[]} bingoWinners   - array of winner addresses (empty if no bingo)
+ * @param {number}   bingoWinnerBall - 0 if no bingo winner
+ * @returns {Promise<string>} EIP-712 signature
  */
-async function signResolution(roundId, lineWinner, lineWinnerBall, bingoWinner, bingoWinnerBall) {
+async function signResolution(roundId, lineWinners, lineWinnerBall, bingoWinners, bingoWinnerBall) {
   const { getSigner } = require('../chain/provider');
   const { BINGO_CONTRACT_ADDRESS } = require('../chain/bingoProvider');
 
@@ -198,20 +205,20 @@ async function signResolution(roundId, lineWinner, lineWinnerBall, bingoWinner, 
 
   const types = {
     ResolveRound: [
-      { name: 'roundId', type: 'uint256' },
-      { name: 'lineWinner', type: 'address' },
-      { name: 'lineWinnerBall', type: 'uint8' },
-      { name: 'bingoWinner', type: 'address' },
-      { name: 'bingoWinnerBall', type: 'uint8' },
+      { name: 'roundId',         type: 'uint256'   },
+      { name: 'lineWinners',     type: 'address[]' },
+      { name: 'lineWinnerBall',  type: 'uint8'     },
+      { name: 'bingoWinners',    type: 'address[]' },
+      { name: 'bingoWinnerBall', type: 'uint8'     },
     ],
   };
 
   const value = {
-    roundId: roundId,
-    lineWinner: lineWinner,
-    lineWinnerBall: lineWinnerBall,
-    bingoWinner: bingoWinner,
-    bingoWinnerBall: bingoWinnerBall,
+    roundId,
+    lineWinners,
+    lineWinnerBall,
+    bingoWinners,
+    bingoWinnerBall,
   };
 
   const signature = await signer.signTypedData(domain, types, value);
@@ -235,19 +242,28 @@ async function resolveRound(roundId) {
   const startTime = Date.now();
   console.log(`[BingoResolver] Starting resolution for round ${roundId}`);
 
-  // 1. Fetch round from DB
-  const roundResult = await pool.query(
-    'SELECT * FROM bingo_rounds WHERE round_id = $1',
+  // 1. Atomically claim the round: transition vrf_fulfilled → resolving.
+  //    If another instance already claimed it, this UPDATE returns 0 rows.
+  const claimResult = await pool.query(
+    `UPDATE bingo_rounds SET status = 'resolving', updated_at = NOW()
+     WHERE round_id = $1 AND status = 'vrf_fulfilled'
+     RETURNING *`,
     [roundId]
   );
-  if (roundResult.rows.length === 0) {
-    throw new Error(`Round ${roundId} not found in database`);
+  if (claimResult.rowCount === 0) {
+    // Either already resolved/resolving by another instance, or wrong state
+    const { rows } = await pool.query('SELECT status FROM bingo_rounds WHERE round_id = $1', [roundId]);
+    const current = rows[0]?.status ?? 'not found';
+    console.log(`[BingoResolver] Round ${roundId} skipped — already claimed or wrong status (current: ${current})`);
+    return null;
   }
-  const round = roundResult.rows[0];
-  if (round.status !== 'vrf_fulfilled') {
-    throw new Error(`Round ${roundId} is not in vrf_fulfilled status (current: ${round.status})`);
-  }
+  const round = claimResult.rows[0];
   if (!round.vrf_random_word) {
+    // Roll back the status claim before throwing
+    await pool.query(
+      `UPDATE bingo_rounds SET status = 'vrf_fulfilled', updated_at = NOW() WHERE round_id = $1`,
+      [roundId]
+    );
     throw new Error(`Round ${roundId} has no VRF random word`);
   }
 
@@ -277,30 +293,44 @@ async function resolveRound(roundId) {
     bingo: winners.bingoWinner !== ZERO_ADDRESS ? `${winners.bingoWinner} at ball ${winners.bingoWinnerBall}` : 'none',
   });
 
+  // Extract winner address arrays (co-winner support)
+  const lineWinnerAddresses  = winners.lineWinners.map(w => w.owner);
+  const bingoWinnerAddresses = winners.bingoWinners.map(w => w.owner);
+
   // 5. Sign EIP-712
   const signature = await signResolution(
     roundId,
-    winners.lineWinner,
+    lineWinnerAddresses,
     winners.lineWinnerBall,
-    winners.bingoWinner,
-    winners.bingoWinnerBall
+    bingoWinnerAddresses,
+    winners.bingoWinnerBall,
   );
   console.log(`[BingoResolver] Signed resolution for round ${roundId}`);
 
-  // 6. Call contract
-  const { getBingoContract } = require('../chain/bingoProvider');
-  const bingoContract = getBingoContract();
+  // 6. Call contract — if this fails, roll back resolving → vrf_fulfilled so it can retry
+  let receipt;
+  try {
+    const { getBingoContract } = require('../chain/bingoProvider');
+    const bingoContract = getBingoContract();
 
-  const tx = await bingoContract.resolveRound(
-    roundId,
-    winners.lineWinner,
-    winners.lineWinnerBall,
-    winners.bingoWinner,
-    winners.bingoWinnerBall,
-    signature
-  );
-  const receipt = await tx.wait();
-  console.log(`[BingoResolver] resolveRound tx: ${receipt.hash}`);
+    const tx = await bingoContract.resolveRound(
+      roundId,
+      lineWinnerAddresses,
+      winners.lineWinnerBall,
+      bingoWinnerAddresses,
+      winners.bingoWinnerBall,
+      signature
+    );
+    receipt = await tx.wait();
+    console.log(`[BingoResolver] resolveRound tx: ${receipt.hash}`);
+  } catch (contractErr) {
+    // Roll back the 'resolving' status so the round can be retried
+    await pool.query(
+      `UPDATE bingo_rounds SET status = 'vrf_fulfilled', updated_at = NOW() WHERE round_id = $1 AND status = 'resolving'`,
+      [roundId]
+    );
+    throw contractErr;
+  }
 
   const resolutionTimeMs = Date.now() - startTime;
 
@@ -332,16 +362,17 @@ async function resolveRound(roundId) {
       ]
     );
 
-    // Update bingo_rounds
+    // Update bingo_rounds — only advance from 'resolving', never overwrite a terminal status (F-09)
     await client.query(
       `UPDATE bingo_rounds SET
-         status = 'resolved',
+         status = 'drawing',
+         draw_started_at = NOW(),
          drawn_balls = $1,
          line_winner = $2,
          bingo_winner = $3,
          resolution_tx = $4,
          updated_at = NOW()
-       WHERE round_id = $5`,
+       WHERE round_id = $5 AND status = 'resolving'`,
       [
         JSON.stringify(drawnBalls),
         winners.lineWinner !== ZERO_ADDRESS ? winners.lineWinner : null,
@@ -351,11 +382,11 @@ async function resolveRound(roundId) {
       ]
     );
 
-    // Update individual cards with hit info
+    // Update individual cards with hit info — mark ALL co-winners (F-04)
     for (const card of cards) {
       const result = checkCard(card.numbers, drawnBalls);
-      const isLineWinner = winners.lineWinnerCardId === card.cardId;
-      const isBingoWinner = winners.bingoWinnerCardId === card.cardId;
+      const isLineWinner  = winners.lineWinners.some(w => w.cardId === card.cardId);
+      const isBingoWinner = winners.bingoWinners.some(w => w.cardId === card.cardId);
 
       await client.query(
         `UPDATE bingo_cards SET

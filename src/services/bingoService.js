@@ -65,14 +65,24 @@ async function getConfig() {
 /**
  * List rounds with optional status filter
  */
-async function getRounds(status, limit = 20) {
+async function getRounds(status, limit = 20, roomNumber = null) {
   let query = 'SELECT * FROM bingo_rounds';
   const params = [];
   let paramIdx = 1;
+  const conditions = [];
 
   if (status) {
-    query += ` WHERE status = $${paramIdx++}`;
+    conditions.push(`status = $${paramIdx++}`);
     params.push(status);
+  }
+
+  if (roomNumber) {
+    conditions.push(`room_number = $${paramIdx++}`);
+    params.push(parseInt(roomNumber));
+  }
+
+  if (conditions.length > 0) {
+    query += ' WHERE ' + conditions.join(' AND ');
   }
 
   query += ` ORDER BY round_id DESC LIMIT $${paramIdx}`;
@@ -157,7 +167,7 @@ async function getVerificationData(roundId) {
   if (roundResult.rows.length === 0) return null;
   const round = roundResult.rows[0];
 
-  if (round.status !== 'resolved') {
+  if (round.status !== 'resolved' && round.status !== 'drawing') {
     return { roundId: round.round_id, status: round.status, message: 'Round not yet resolved' };
   }
 
@@ -344,19 +354,19 @@ function generateCardNumbers() {
  * @param {number} buyWindowSeconds - seconds the round stays open
  * @returns {Object} { roundId, scheduledClose }
  */
-async function createRoundOffChain(buyWindowSeconds = 45) {
+async function createRoundOffChain(buyWindowSeconds = 45, roomNumber = null) {
   const roundId = await getNextRoundId();
   const now = new Date();
   const scheduledClose = new Date(now.getTime() + buyWindowSeconds * 1000);
 
   await pool.query(
-    `INSERT INTO bingo_rounds (round_id, status, scheduled_close, created_at, updated_at)
-     VALUES ($1, 'open', $2, NOW(), NOW())
+    `INSERT INTO bingo_rounds (round_id, status, scheduled_close, room_number, created_at, updated_at)
+     VALUES ($1, 'open', $2, $3, NOW(), NOW())
      ON CONFLICT (round_id) DO NOTHING`,
-    [roundId, scheduledClose]
+    [roundId, scheduledClose, roomNumber]
   );
 
-  console.log(`[Bingo] Off-chain round #${roundId} created, closes at ${scheduledClose.toISOString()}`);
+  console.log(`[Bingo] Off-chain round #${roundId} (room ${roomNumber}) created, closes at ${scheduledClose.toISOString()}`);
   return { roundId, scheduledClose };
 }
 
@@ -372,37 +382,36 @@ async function buyCardsOffChain(walletAddress, roundId, count = 1) {
   const config = await gameConfigService.getBingoConfig();
   const maxCards = config.maxCardsPerUser || 4;
   const cardPrice = config.cardPrice || 1;
-
-  // Validate round is open
-  const roundResult = await pool.query(
-    'SELECT * FROM bingo_rounds WHERE round_id = $1',
-    [roundId]
-  );
-  if (roundResult.rows.length === 0) throw new Error('Round not found');
-  const round = roundResult.rows[0];
-  if (round.status !== 'open') throw new Error('Round is not open for purchases');
-
-  // Check time hasn't expired
-  if (round.scheduled_close && new Date() >= new Date(round.scheduled_close)) {
-    throw new Error('Round buy window has closed');
-  }
-
-  // Check user hasn't exceeded max cards
-  const existingCards = await pool.query(
-    'SELECT COUNT(*) AS cnt FROM bingo_cards WHERE round_id = $1 AND owner_address = $2',
-    [roundId, addr]
-  );
-  const existingCount = parseInt(existingCards.rows[0].cnt);
-  if (existingCount + count > maxCards) {
-    throw new Error(`Max ${maxCards} cards per round. You already have ${existingCount}.`);
-  }
-
   const totalCost = cardPrice * count;
 
-  // Deduct balance from user
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Lock the round row first — serializes all concurrent purchases for this round,
+    // preventing phantom-read races on the per-user card count check below.
+    const roundResult = await client.query(
+      'SELECT * FROM bingo_rounds WHERE round_id = $1 FOR UPDATE',
+      [roundId]
+    );
+    if (roundResult.rows.length === 0) throw new Error('Round not found');
+    const round = roundResult.rows[0];
+    if (round.status !== 'open') throw new Error('Round is not open for purchases');
+
+    // Check time hasn't expired
+    if (round.scheduled_close && new Date() >= new Date(round.scheduled_close)) {
+      throw new Error('Round buy window has closed');
+    }
+
+    // Re-check card count inside the transaction (consistent read under lock)
+    const existingCards = await client.query(
+      'SELECT COUNT(*) AS cnt FROM bingo_cards WHERE round_id = $1 AND owner_address = $2',
+      [roundId, addr]
+    );
+    const existingCount = parseInt(existingCards.rows[0].cnt);
+    if (existingCount + count > maxCards) {
+      throw new Error(`Max ${maxCards} cards per round. You already have ${existingCount}.`);
+    }
 
     // Deduct balance
     const balResult = await client.query(
@@ -497,7 +506,7 @@ async function resolveRoundOffChain(roundId) {
   // 4. Draw balls using existing resolver
   const drawnBalls = drawBallsFromVrfSeed(vrfBigInt.toString());
 
-  // 5. Detect winners
+  // 5. Detect winners (returns arrays of co-winners at same ball)
   const winners = detectWinners(cards, drawnBalls);
 
   // 6. Calculate prizes
@@ -505,8 +514,8 @@ async function resolveRoundOffChain(roundId) {
   const revenue = parseFloat(round.total_revenue) || 0;
   const feeBps = config.feeBps || 1000;
   const reserveBps = config.reserveBps || 1000;
-  const linePrizeBps = config.linePrizeBps || 1000;
-  const bingoPrizeBps = config.bingoPrizeBps || 7000;
+  const linePrizeBps = config.linePrizeBps || 1500;
+  const bingoPrizeBps = config.bingoPrizeBps || 8500;
   const jackpotThreshold = config.jackpotBallThreshold || 25;
 
   const feeAmount = (revenue * feeBps) / 10000;
@@ -518,8 +527,8 @@ async function resolveRoundOffChain(roundId) {
   let jackpotWon = false;
   let jackpotPaid = 0;
 
-  const hasLineWinner = winners.lineWinner !== ZERO_ADDRESS;
-  const hasBingoWinner = winners.bingoWinner !== ZERO_ADDRESS;
+  const hasLineWinner = winners.lineWinners.length > 0;
+  const hasBingoWinner = winners.bingoWinners.length > 0;
 
   if (hasLineWinner || hasBingoWinner) {
     if (hasLineWinner) {
@@ -527,32 +536,44 @@ async function resolveRoundOffChain(roundId) {
     }
     if (hasBingoWinner) {
       bingoPrize = (winnerPot * bingoPrizeBps) / 10000;
-
-      // Jackpot check: bingo at ball <= threshold
-      if (winners.bingoWinnerBall <= jackpotThreshold) {
-        const poolResult = await pool.query('SELECT jackpot_balance FROM bingo_pool WHERE id = 1');
-        const currentJackpot = parseFloat(poolResult.rows[0]?.jackpot_balance || 0);
-        if (currentJackpot > 0) {
-          jackpotWon = true;
-          jackpotPaid = currentJackpot;
-        }
-      }
     }
-    // Remaining of winnerPot that isn't line/bingo prize goes to reserve
-  } else {
-    // No winners: 10% fee, rest to jackpot
-    // fee already calculated; everything else goes to reserve/jackpot
   }
 
-  // 7. Store results in DB
+  // Build winner address lists (unique addresses for DB storage)
+  const lineWinnerAddresses = hasLineWinner
+    ? [...new Set(winners.lineWinners.map(w => w.owner))]
+    : [];
+  const bingoWinnerAddresses = hasBingoWinner
+    ? [...new Set(winners.bingoWinners.map(w => w.owner))]
+    : [];
+
+  // Card IDs of all co-winners
+  const lineWinnerCardIds = new Set(winners.lineWinners.map(w => w.cardId));
+  const bingoWinnerCardIds = new Set(winners.bingoWinners.map(w => w.cardId));
+
+  // 7. Store results in DB — single atomic transaction covers round update + card updates + prize payments
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // Update round
+    // Lock bingo_pool row first to prevent simultaneous jackpot double-payout across rooms
+    const poolRow = await client.query(
+      'SELECT jackpot_balance FROM bingo_pool WHERE id = 1 FOR UPDATE'
+    );
+    const currentJackpot = parseFloat(poolRow.rows[0]?.jackpot_balance || 0);
+
+    // Jackpot check inside the transaction (FOR UPDATE ensures no concurrent payout)
+    if (hasBingoWinner && bingoPrize > 0 && winners.bingoWinnerBall <= jackpotThreshold && currentJackpot > 0) {
+      jackpotWon = true;
+      jackpotPaid = currentJackpot;
+    }
+
+    // Update round — status='drawing' with draw_started_at for synchronized animation
+    // line_winner/bingo_winner store JSON arrays of addresses
     await client.query(
       `UPDATE bingo_rounds SET
-         status = 'resolved',
+         status = 'drawing',
+         draw_started_at = NOW(),
          vrf_random_word = $1,
          drawn_balls = $2,
          line_winner = $3,
@@ -568,8 +589,8 @@ async function resolveRoundOffChain(roundId) {
       [
         vrfSeed,
         JSON.stringify(drawnBalls),
-        hasLineWinner ? winners.lineWinner : null,
-        hasBingoWinner ? winners.bingoWinner : null,
+        hasLineWinner ? JSON.stringify(lineWinnerAddresses) : null,
+        hasBingoWinner ? JSON.stringify(bingoWinnerAddresses) : null,
         feeAmount,
         reserveAmount,
         linePrize,
@@ -580,7 +601,7 @@ async function resolveRoundOffChain(roundId) {
       ]
     );
 
-    // Insert bingo_results
+    // Insert bingo_results (store first card IDs for backward compat)
     await client.query(
       `INSERT INTO bingo_results (round_id, vrf_seed, drawn_balls, line_winner_card_id, bingo_winner_card_id, resolution_time_ms)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -592,11 +613,11 @@ async function resolveRoundOffChain(roundId) {
       [roundId, vrfSeed, JSON.stringify(drawnBalls), winners.lineWinnerCardId, winners.bingoWinnerCardId, Date.now() - startTime]
     );
 
-    // Update individual cards with hit info
+    // Update individual cards with hit info — mark ALL co-winners
     for (const card of cards) {
       const result = checkCard(card.numbers, drawnBalls);
-      const isLineWinner = winners.lineWinnerCardId === card.cardId;
-      const isBingoWinner = winners.bingoWinnerCardId === card.cardId;
+      const isLineWinner = lineWinnerCardIds.has(card.cardId);
+      const isBingoWinner = bingoWinnerCardIds.has(card.cardId);
 
       await client.query(
         `UPDATE bingo_cards SET line_hit_ball = $1, bingo_hit_ball = $2, is_line_winner = $3, is_bingo_winner = $4 WHERE card_id = $5`,
@@ -625,19 +646,27 @@ async function resolveRoundOffChain(roundId) {
       ]
     );
 
-    // Pay winners: credit balances
+    // Pay line winners: split linePrize equally among unique winner addresses
     if (hasLineWinner && linePrize > 0) {
-      await client.query(
-        'UPDATE users SET balance = balance + $1, updated_at = NOW() WHERE wallet_address = $2',
-        [linePrize, winners.lineWinner]
-      );
+      const prizePerAddress = linePrize / lineWinnerAddresses.length;
+      for (const addr of lineWinnerAddresses) {
+        await client.query(
+          'UPDATE users SET balance = balance + $1, updated_at = NOW() WHERE wallet_address = $2',
+          [prizePerAddress, addr]
+        );
+      }
     }
-    if (hasBingoWinner && bingoPrize > 0) {
-      let totalBingoPrize = bingoPrize + jackpotPaid;
-      await client.query(
-        'UPDATE users SET balance = balance + $1, updated_at = NOW() WHERE wallet_address = $2',
-        [totalBingoPrize, winners.bingoWinner]
-      );
+
+    // Pay bingo winners: split (bingoPrize + jackpot) equally among unique winner addresses
+    if (hasBingoWinner && (bingoPrize > 0 || jackpotPaid > 0)) {
+      const totalBingoPrize = bingoPrize + jackpotPaid;
+      const prizePerAddress = totalBingoPrize / bingoWinnerAddresses.length;
+      for (const addr of bingoWinnerAddresses) {
+        await client.query(
+          'UPDATE users SET balance = balance + $1, updated_at = NOW() WHERE wallet_address = $2',
+          [prizePerAddress, addr]
+        );
+      }
     }
 
     await client.query('COMMIT');
@@ -649,14 +678,16 @@ async function resolveRoundOffChain(roundId) {
   }
 
   const resolutionTimeMs = Date.now() - startTime;
-  console.log(`[Bingo] Off-chain round #${roundId} resolved in ${resolutionTimeMs}ms — line: ${hasLineWinner ? winners.lineWinner : 'none'}, bingo: ${hasBingoWinner ? winners.bingoWinner : 'none'}`);
+  const lineDesc = hasLineWinner ? `${lineWinnerAddresses.length} winner(s) at ball ${winners.lineWinnerBall}` : 'none';
+  const bingoDesc = hasBingoWinner ? `${bingoWinnerAddresses.length} winner(s) at ball ${winners.bingoWinnerBall}` : 'none';
+  console.log(`[Bingo] Off-chain round #${roundId} resolved in ${resolutionTimeMs}ms — line: ${lineDesc}, bingo: ${bingoDesc}`);
 
   return {
     roundId,
     drawnBalls,
-    lineWinner: winners.lineWinner,
+    lineWinners: lineWinnerAddresses,
     lineWinnerBall: winners.lineWinnerBall,
-    bingoWinner: winners.bingoWinner,
+    bingoWinners: bingoWinnerAddresses,
     bingoWinnerBall: winners.bingoWinnerBall,
     linePrize,
     bingoPrize,
@@ -669,11 +700,126 @@ async function resolveRoundOffChain(roundId) {
 }
 
 /**
+ * Finalize a drawing round: transition from 'drawing' to 'resolved'.
+ * Called by the scheduler after the drawing animation duration has elapsed.
+ */
+async function finalizeDrawing(roundId) {
+  await pool.query(
+    `UPDATE bingo_rounds SET status = 'resolved', updated_at = NOW() WHERE round_id = $1 AND status = 'drawing'`,
+    [roundId]
+  );
+  console.log(`[Bingo] Round #${roundId} finalized (drawing → resolved)`);
+}
+
+/**
+ * Get the most recent round for each room (1-4).
+ * Returns array of room states with card counts.
+ */
+async function getActiveRooms() {
+  const result = await pool.query(`
+    SELECT DISTINCT ON (room_number)
+      round_id, room_number, status, scheduled_close, draw_started_at,
+      total_cards, total_revenue, drawn_balls,
+      line_winner, bingo_winner, line_prize, bingo_prize,
+      jackpot_won, jackpot_paid, created_at, updated_at
+    FROM bingo_rounds
+    WHERE room_number IS NOT NULL
+    ORDER BY room_number, round_id DESC
+  `);
+  return result.rows;
+}
+
+/**
+ * Get rooms where user has active cards (open, closed, or recently resolved rounds).
+ */
+async function getUserActiveRooms(walletAddress) {
+  const addr = walletAddress.toLowerCase();
+  const result = await pool.query(
+    `SELECT DISTINCT br.room_number, br.round_id, br.status, br.scheduled_close,
+            COUNT(bc.card_id) as card_count
+     FROM bingo_cards bc
+     JOIN bingo_rounds br ON bc.round_id = br.round_id
+     WHERE bc.owner_address = $1
+       AND br.room_number IS NOT NULL
+       AND (
+         (br.status = 'open' AND br.scheduled_close > NOW())
+         OR
+         (br.status = 'closed')
+         OR
+         (br.status = 'drawing')
+         OR
+         (br.status = 'resolved' AND br.updated_at > NOW() - INTERVAL '3 minutes')
+       )
+     GROUP BY br.room_number, br.round_id, br.status, br.scheduled_close
+     ORDER BY br.round_id DESC`,
+    [addr]
+  );
+  return result.rows;
+}
+
+/**
+ * Get unique player count per round (for active rooms).
+ */
+async function getPlayerCounts(roundIds) {
+  if (!roundIds || roundIds.length === 0) return {};
+  const result = await pool.query(
+    `SELECT round_id, COUNT(DISTINCT owner_address) as player_count
+     FROM bingo_cards
+     WHERE round_id = ANY($1)
+     GROUP BY round_id`,
+    [roundIds]
+  );
+  const counts = {};
+  result.rows.forEach(r => { counts[r.round_id] = parseInt(r.player_count); });
+  return counts;
+}
+
+/**
  * Get jackpot balance from bingo_pool (off-chain).
  */
 async function getJackpotBalance() {
   const result = await pool.query('SELECT jackpot_balance FROM bingo_pool WHERE id = 1');
   return parseFloat(result.rows[0]?.jackpot_balance || 0);
+}
+
+/**
+ * Find orphaned rounds left by a previous server crash/restart.
+ * Returns three groups that the scheduler must recover:
+ *   - drawing: stuck in animation (need finalizeDrawing, possibly after delay)
+ *   - closed:  VRF never ran (need resolveRoundOffChain + finalizeDrawing)
+ *   - staleOpen: buy window expired but round never closed (need close + resolve + finalize)
+ */
+async function getOrphanRounds() {
+  // Rounds stuck in 'drawing' — include winner ball positions from bingo_cards
+  const drawingResult = await pool.query(`
+    SELECT
+      br.round_id,
+      br.room_number,
+      br.draw_started_at,
+      MIN(CASE WHEN bc.is_line_winner  AND bc.line_hit_ball  > 0 THEN bc.line_hit_ball  END) AS line_winner_ball,
+      MIN(CASE WHEN bc.is_bingo_winner AND bc.bingo_hit_ball > 0 THEN bc.bingo_hit_ball END) AS bingo_winner_ball
+    FROM bingo_rounds br
+    LEFT JOIN bingo_cards bc ON br.round_id = bc.round_id
+    WHERE br.status = 'drawing'
+    GROUP BY br.round_id, br.room_number, br.draw_started_at
+    ORDER BY br.round_id
+  `);
+
+  // Rounds closed but never resolved
+  const closedResult = await pool.query(
+    `SELECT round_id, room_number FROM bingo_rounds WHERE status = 'closed' ORDER BY round_id`
+  );
+
+  // Rounds whose buy window passed but were never closed (server died during buy phase)
+  const staleOpenResult = await pool.query(
+    `SELECT round_id, room_number FROM bingo_rounds WHERE status = 'open' AND scheduled_close < NOW() ORDER BY round_id`
+  );
+
+  return {
+    drawing: drawingResult.rows,
+    closed: closedResult.rows,
+    staleOpen: staleOpenResult.rows,
+  };
 }
 
 module.exports = {
@@ -692,6 +838,11 @@ module.exports = {
   buyCardsOffChain,
   closeRoundOffChain,
   resolveRoundOffChain,
+  finalizeDrawing,
   generateCardNumbers,
   getJackpotBalance,
+  getActiveRooms,
+  getPlayerCounts,
+  getUserActiveRooms,
+  getOrphanRounds,
 };
