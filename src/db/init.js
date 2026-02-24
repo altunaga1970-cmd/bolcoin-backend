@@ -42,6 +42,9 @@ const JS_MIGRATIONS = [
   'add-keno-phase3.js',
   'add-bolita-chain-index.js',
   'add-bingo-tables.js',
+  'add-bingo-room-number.js',
+  'add-bingo-draw-started.js',
+  'enable-bingo.js',
 ];
 
 async function runBaseSchema() {
