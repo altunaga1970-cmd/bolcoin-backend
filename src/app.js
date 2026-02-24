@@ -471,14 +471,32 @@ const { authenticateWallet, requireAdminWallet } = require('./middleware/web3Aut
 app.post('/api/admin/enable-bingo', authenticateWallet, requireAdminWallet, async (req, res) => {
     try {
         const client = await getClient();
+
+        // Enable in feature_flags (used by requireFlag middleware)
+        await client.query(`
+            INSERT INTO feature_flags (key, enabled, description, metadata)
+            VALUES ('bingo_enabled', true, 'Bingo game - 4 rooms, 24/7', '{}')
+            ON CONFLICT (key)
+            DO UPDATE SET enabled = true, updated_at = CURRENT_TIMESTAMP
+        `);
+
+        // Also enable in game_config (used by BingoScheduler)
         await client.query(`
             INSERT INTO game_config (key, value, value_type, description)
             VALUES ('bingo_enabled', 'true', 'boolean', 'Enable/disable Bingo game globally')
             ON CONFLICT (key)
             DO UPDATE SET value = 'true', updated_at = CURRENT_TIMESTAMP
         `);
+
         client.release();
-        console.log('[Config] Bingo enabled via API endpoint');
+
+        // Invalidate feature flag cache
+        try {
+            const featureFlagService = require('./services/featureFlagService');
+            featureFlagService.invalidateCache();
+        } catch (e) { /* ignore */ }
+
+        console.log('[Config] Bingo enabled via API endpoint (feature_flags + game_config)');
         res.json({ success: true, message: 'Bingo enabled successfully' });
     } catch (error) {
         console.error('Error enabling bingo:', error);

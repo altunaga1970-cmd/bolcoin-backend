@@ -1,8 +1,9 @@
 /**
- * Migration: Enable Bingo Game
+ * Migration: Add bingo_enabled to feature_flags table
  *
- * Sets bingo_enabled=true in both feature_flags and game_config tables.
- * The requireFlag middleware reads from feature_flags, so that's the critical one.
+ * The original enable-bingo migration only wrote to game_config,
+ * but requireFlag middleware reads from feature_flags.
+ * This migration fixes the gap.
  */
 
 const pool = require('../../db');
@@ -13,7 +14,6 @@ async function up() {
   try {
     await client.query('BEGIN');
 
-    // Insert into feature_flags (used by requireFlag middleware)
     await client.query(`
       INSERT INTO feature_flags (key, enabled, description, metadata)
       VALUES ('bingo_enabled', true, 'Bingo game - 4 rooms, 24/7', '{}')
@@ -21,20 +21,12 @@ async function up() {
       DO UPDATE SET enabled = true, updated_at = CURRENT_TIMESTAMP
     `);
 
-    // Also insert into game_config (used by BingoScheduler)
-    await client.query(`
-      INSERT INTO game_config (key, value, value_type, description)
-      VALUES ('bingo_enabled', 'true', 'boolean', 'Enable/disable Bingo game globally')
-      ON CONFLICT (key)
-      DO UPDATE SET value = 'true', updated_at = CURRENT_TIMESTAMP
-    `);
-
     await client.query('COMMIT');
-    console.log('[Migration] ✓ Bingo enabled in feature_flags and game_config');
+    console.log('[Migration] ✓ bingo_enabled added to feature_flags (enabled=true)');
 
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('[Migration] Error enabling bingo:', err);
+    console.error('[Migration] Error adding bingo feature flag:', err);
     throw err;
   } finally {
     client.release();
@@ -48,30 +40,21 @@ async function down() {
     await client.query('BEGIN');
 
     await client.query(`
-      UPDATE feature_flags
-      SET enabled = false, updated_at = CURRENT_TIMESTAMP
-      WHERE key = 'bingo_enabled'
-    `);
-
-    await client.query(`
-      UPDATE game_config
-      SET value = 'false', updated_at = CURRENT_TIMESTAMP
-      WHERE key = 'bingo_enabled'
+      DELETE FROM feature_flags WHERE key = 'bingo_enabled'
     `);
 
     await client.query('COMMIT');
-    console.log('[Migration] ✓ Bingo disabled in feature_flags and game_config');
+    console.log('[Migration] ✓ bingo_enabled removed from feature_flags');
 
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('[Migration] Error disabling bingo:', err);
+    console.error('[Migration] Error removing bingo feature flag:', err);
     throw err;
   } finally {
     client.release();
   }
 }
 
-// Run if called directly
 if (require.main === module) {
   const action = process.argv[2];
 
@@ -92,7 +75,7 @@ if (require.main === module) {
       process.exit(1);
     });
   } else {
-    console.log('Usage: node enable-bingo.js [up|down]');
+    console.log('Usage: node add-bingo-feature-flag.js [up|down]');
     process.exit(1);
   }
 }
