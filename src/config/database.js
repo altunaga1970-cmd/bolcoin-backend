@@ -40,7 +40,7 @@ const pool = new Pool({
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 10000,
     ssl: process.env.NODE_ENV === 'production'
-        ? { rejectUnauthorized: false }
+        ? { rejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false' }
         : false,
 });
 
@@ -62,7 +62,9 @@ const query = async (text, params) => {
     try {
         const res = await pool.query(text, params);
         const duration = Date.now() - start;
-        console.log('Query ejecutada:', { text, duration, rows: res.rowCount });
+        if (process.env.NODE_ENV !== 'production') {
+            console.log('Query ejecutada:', { text, duration, rows: res.rowCount });
+        }
         return res;
     } catch (error) {
         console.error('Error en query:', { text, error: error.message });

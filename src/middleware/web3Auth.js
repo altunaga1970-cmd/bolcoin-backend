@@ -62,8 +62,8 @@ async function authenticateWallet(req, res, next) {
         const signature = req.headers['x-wallet-signature'];
         const message = req.headers['x-wallet-message'];
 
-        // DEV: Skip signature verification in development mode (wallet address is enough)
-        const skipSignature = process.env.NODE_ENV === 'development' && (!signature || !message);
+        // Signature is ALWAYS required - no dev bypass
+        const skipSignature = process.env.UNSAFE_SKIP_AUTH === 'true' && process.env.NODE_ENV !== 'production';
         if (!skipSignature && (!signature || !message)) {
             return res.status(401).json({
                 success: false,

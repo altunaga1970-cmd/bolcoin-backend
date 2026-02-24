@@ -3,7 +3,7 @@
  * Handles daily settlements and monthly commission calculations
  */
 
-const { pool } = require('../db');
+const pool = require('../db');
 const { RISK_CONFIG } = require('../config/constants');
 const riskService = require('./riskService');
 

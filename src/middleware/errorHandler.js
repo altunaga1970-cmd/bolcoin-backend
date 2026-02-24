@@ -27,10 +27,15 @@ function errorHandler(err, req, res, next) {
     // Obtener código de estado
     const statusCode = res.statusCode === 200 ? 500 : res.statusCode;
 
-    // Respuesta de error
+    // Respuesta de error - ocultar detalles internos en produccion
+    const isProduction = process.env.NODE_ENV === 'production';
+    const safeMessage = isProduction && statusCode === 500
+        ? 'Error interno del servidor'
+        : err.message;
+
     res.status(statusCode).json({
         success: false,
-        message: err.message,
+        message: safeMessage,
         ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
     });
 }

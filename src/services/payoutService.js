@@ -114,10 +114,15 @@ async function processDrawResults(drawId, winningNumbers) {
                     const balanceBefore = parseFloat(user.balance);
                     const balanceAfter = balanceBefore + payout;
 
-                    await client.query(
+                    const updateResult = await client.query(
                         'UPDATE users SET balance = $1, version = version + 1 WHERE id = $2 AND version = $3',
                         [balanceAfter, bet.user_id, user.version]
                     );
+
+                    if (updateResult.rowCount === 0) {
+                        console.error(`Conflicto de concurrencia al pagar apuesta #${bet.id} a usuario #${bet.user_id}`);
+                        continue; // Skip this payout, will need manual resolution
+                    }
 
                     // Crear transacción de ganancia
                     await client.query(

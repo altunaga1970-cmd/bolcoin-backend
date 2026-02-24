@@ -4,6 +4,7 @@ const AuditLog = require('../models/AuditLog');
 const DrawStateMachine = require('./drawStateMachine');
 const {
     AUDIT_ACTIONS,
+    GAME_RULES,
     extractWinningNumbers,
     calculateLotteryCategory,
     getLotteryPrize
@@ -86,22 +87,22 @@ class ResultProcessor {
         switch (bet.game_type) {
             case 'fijos':
                 won = betNumber.slice(-2) === winningNumbers.fijos;
-                multiplier = 80;
+                multiplier = GAME_RULES.fijos.multiplier;
                 break;
             case 'centenas':
                 won = betNumber.slice(-3) === winningNumbers.centenas;
-                multiplier = 500;
+                multiplier = GAME_RULES.centenas.multiplier;
                 break;
             case 'parles':
                 won = betNumber === winningNumbers.parles;
-                multiplier = 900;
+                multiplier = GAME_RULES.parles.multiplier;
                 break;
             case 'corrido':
                 // Corrido gana si coinciden los primeros 2 o los últimos 2
                 const first2 = betNumber.slice(0, 2);
                 const last2 = betNumber.slice(-2);
                 won = first2 === winningNumbers.fijos || last2 === winningNumbers.fijos;
-                multiplier = 30;
+                multiplier = GAME_RULES.corrido ? GAME_RULES.corrido.multiplier : 30;
                 break;
         }
 

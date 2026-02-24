@@ -464,10 +464,11 @@ if (process.env.NODE_ENV === 'development') {
 // PRODUCTION-SAFE UTILITY ENDPOINTS
 // =================================
 
-// Enable bingo in game_config (safe to run in production)
+// Enable bingo in game_config (admin-only)
 const { getClient } = require('./config/database');
+const { authenticateWallet, requireAdminWallet } = require('./middleware/web3Auth');
 
-app.post('/api/dev/enable-bingo', async (req, res) => {
+app.post('/api/admin/enable-bingo', authenticateWallet, requireAdminWallet, async (req, res) => {
     try {
         const client = await getClient();
         await client.query(`

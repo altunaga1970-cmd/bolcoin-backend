@@ -273,6 +273,11 @@ async function resolveRound(roundId) {
     [roundId]
   );
   if (cardsResult.rows.length === 0) {
+    // Roll back the status claim before throwing
+    await pool.query(
+      `UPDATE bingo_rounds SET status = 'vrf_fulfilled', updated_at = NOW() WHERE round_id = $1`,
+      [roundId]
+    );
     throw new Error(`Round ${roundId} has no cards`);
   }
 

@@ -21,6 +21,9 @@ class BingoEventService {
     this.contract = null;
     this.provider = null;
     this.isRunning = false;
+    this.pollTimer = null;
+    this.lastBlockProcessed = 0;
+    this.pollingInterval = 12000; // 12s
   }
 
   async init() {
@@ -52,107 +55,70 @@ class BingoEventService {
     if (this.isRunning) return;
     this.isRunning = true;
 
-    console.log('[BingoEvents] Starting event listeners...');
+    console.log('[BingoEvents] Starting event listeners (getLogs polling)...');
 
-    // RoundCreated
-    this.contract.on('RoundCreated', async (roundId, scheduledClose) => {
-      try {
-        await this._onRoundCreated(roundId, scheduledClose);
-      } catch (err) {
-        console.error('[BingoEvents] Error indexing RoundCreated:', err.message);
-      }
-    });
+    // Seed lastBlockProcessed from current chain tip
+    try {
+      this.lastBlockProcessed = await this.provider.getBlockNumber();
+    } catch (_) {
+      this.lastBlockProcessed = 0;
+    }
 
-    // CardsPurchased
-    this.contract.on('CardsPurchased', async (roundId, buyer, count, cardIds, totalCost) => {
-      try {
-        await this._onCardsPurchased(roundId, buyer, count, cardIds, totalCost);
-      } catch (err) {
-        console.error('[BingoEvents] Error indexing CardsPurchased:', err.message);
-      }
-    });
-
-    // RoundClosed
-    this.contract.on('RoundClosed', async (roundId, vrfRequestId) => {
-      try {
-        await this._onRoundClosed(roundId, vrfRequestId);
-      } catch (err) {
-        console.error('[BingoEvents] Error indexing RoundClosed:', err.message);
-      }
-    });
-
-    // VrfFulfilled
-    this.contract.on('VrfFulfilled', async (roundId, randomWord) => {
-      try {
-        await this._onVrfFulfilled(roundId, randomWord);
-      } catch (err) {
-        console.error('[BingoEvents] Error indexing VrfFulfilled:', err.message);
-      }
-    });
-
-    // RoundResolved
-    this.contract.on('RoundResolved', async (roundId, lineWinner, lineWinnerBall, bingoWinner, bingoWinnerBall, jackpotWon, jackpotPaid) => {
-      try {
-        await this._onRoundResolved(roundId, lineWinner, lineWinnerBall, bingoWinner, bingoWinnerBall, jackpotWon, jackpotPaid);
-      } catch (err) {
-        console.error('[BingoEvents] Error indexing RoundResolved:', err.message);
-      }
-    });
-
-    // RoundNoWinner
-    this.contract.on('RoundNoWinner', async (roundId, toJackpot) => {
-      try {
-        await this._onRoundNoWinner(roundId, toJackpot);
-      } catch (err) {
-        console.error('[BingoEvents] Error indexing RoundNoWinner:', err.message);
-      }
-    });
-
-    // RoundCancelled
-    this.contract.on('RoundCancelled', async (roundId, refunded) => {
-      try {
-        await this._onRoundCancelled(roundId, refunded);
-      } catch (err) {
-        console.error('[BingoEvents] Error indexing RoundCancelled:', err.message);
-      }
-    });
-
-    // JackpotContribution
-    this.contract.on('JackpotContribution', async (roundId, amount, newBalance) => {
-      try {
-        await this._updateBingoPool();
-      } catch (err) {
-        console.error('[BingoEvents] Error on JackpotContribution:', err.message);
-      }
-    });
-
-    // JackpotPaid
-    this.contract.on('JackpotPaid', async (roundId, winner, amount) => {
-      try {
-        await this._updateBingoPool();
-      } catch (err) {
-        console.error('[BingoEvents] Error on JackpotPaid:', err.message);
-      }
-    });
-
-    // FeesAccrued
-    this.contract.on('FeesAccrued', async (roundId, amount, totalAccrued) => {
-      try {
-        await this._updateBingoPool();
-      } catch (err) {
-        console.error('[BingoEvents] Error on FeesAccrued:', err.message);
-      }
-    });
+    this._schedulePoll();
 
     console.log('[BingoEvents] Event listeners active');
   }
 
   stop() {
-    if (this.contract) {
-      this.contract.removeAllListeners();
-    }
     this.isRunning = false;
+    if (this.pollTimer) { clearTimeout(this.pollTimer); this.pollTimer = null; }
     console.log('[BingoEvents] Stopped');
+  }
+
+  _schedulePoll() {
+    if (!this.isRunning) return;
+    this.pollTimer = setTimeout(() => this._poll(), this.pollingInterval);
+  }
+
+  async _poll() {
+    if (!this.isRunning) return;
+    try {
+      const currentBlock = await this.provider.getBlockNumber();
+      if (currentBlock > this.lastBlockProcessed) {
+        const logs = await this.provider.getLogs({
+          address: process.env.BINGO_CONTRACT_ADDRESS,
+          fromBlock: this.lastBlockProcessed + 1,
+          toBlock: currentBlock,
+        });
+        for (const log of logs) {
+          try {
+            const parsed = this.contract.interface.parseLog(log);
+            if (parsed) await this._dispatch(parsed);
+          } catch (_) { /* skip non-matching logs */ }
+        }
+        this.lastBlockProcessed = currentBlock;
+      }
+    } catch (err) {
+      console.error('[BingoEvents] Poll error:', err.message);
+    }
+    this._schedulePoll();
+  }
+
+  async _dispatch(parsed) {
+    const { name, args } = parsed;
+    try {
+      if (name === 'RoundCreated')        await this._onRoundCreated(args[0], args[1]);
+      else if (name === 'CardsPurchased') await this._onCardsPurchased(args[0], args[1], args[2], args[3], args[4]);
+      else if (name === 'RoundClosed')    await this._onRoundClosed(args[0], args[1]);
+      else if (name === 'VrfFulfilled')   await this._onVrfFulfilled(args[0], args[1]);
+      else if (name === 'RoundResolved')  await this._onRoundResolved(args[0], args[1], args[2], args[3], args[4], args[5], args[6]);
+      else if (name === 'RoundNoWinner')  await this._onRoundNoWinner(args[0], args[1]);
+      else if (name === 'RoundCancelled') await this._onRoundCancelled(args[0], args[1]);
+      else if (name === 'JackpotContribution' || name === 'JackpotPaid' || name === 'FeesAccrued')
+        await this._updateBingoPool();
+    } catch (err) {
+      console.error(`[BingoEvents] Error handling ${name}:`, err.message);
+    }
   }
 
   // ── Event Handlers ──

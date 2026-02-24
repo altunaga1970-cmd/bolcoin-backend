@@ -44,11 +44,15 @@ async function recharge(userId, amount) {
             throw new Error(`El balance no puede exceder ${LIMITS.MAX_BALANCE} USDT`);
         }
 
-        // Actualizar balance
-        await client.query(
+        // Actualizar balance con verificacion de optimistic lock
+        const updateResult = await client.query(
             'UPDATE users SET balance = $1, version = version + 1 WHERE id = $2 AND version = $3',
             [balanceAfter, userId, user.version]
         );
+
+        if (updateResult.rowCount === 0) {
+            throw new Error('Conflicto de concurrencia al actualizar balance. Reintente la operacion.');
+        }
 
         // Crear registro de transacción
         const transactionResult = await client.query(
@@ -155,11 +159,15 @@ async function adjustBalance(userId, amount, reason, adminId) {
             throw new Error(`El balance no puede exceder ${LIMITS.MAX_BALANCE} USDT`);
         }
 
-        // Actualizar balance
-        await client.query(
+        // Actualizar balance con verificacion de optimistic lock
+        const updateResult = await client.query(
             'UPDATE users SET balance = $1, version = version + 1 WHERE id = $2 AND version = $3',
             [balanceAfter, userId, user.version]
         );
+
+        if (updateResult.rowCount === 0) {
+            throw new Error('Conflicto de concurrencia al actualizar balance. Reintente la operacion.');
+        }
 
         // Crear registro de transacción
         const transactionResult = await client.query(

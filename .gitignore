@@ -39,3 +39,7 @@ build/
 # Claude temp files
 tmpclaude-*
 nul
+
+# Backend duplicate env (contains secrets)
+backend/.env
+backend/.env.*
