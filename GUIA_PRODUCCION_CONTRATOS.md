@@ -1,9 +1,23 @@
 # GUÍA COMPLETA DE PRODUCCIÓN — CONTRATOS BOLCOIN
 ## Auditoría y Despliegue Mainnet Polygon
 
-**Versión**: 1.0 — 2026-02-26
+**Versión**: 1.1 — 2026-02-26
 **Dirigida a**: Propietario del proyecto (sin conocimiento técnico)
 **Nivel de detalle**: Cada paso explicado, sin dar nada por supuesto
+
+---
+
+## TUS CREDENCIALES ACTUALES (GUARDA ESTO SEGURO)
+
+Estos son los datos reales que tienes configurados. Guarda este archivo de forma privada.
+
+| Dato | Valor |
+|------|-------|
+| **Polygonscan API Key** | `S7YZN15EI67CANCDC6AID18NN5DKI6AEKG` |
+| **VRF Subscription ID (Amoy Testnet)** | `7970515401521569318593654502782683303673295181035791822529802935575344475841` |
+| **Wallet Amoy Testnet (Operator)** | `0x1DB00BB0Ab602fD42b89e16CDaD89619a6Df1E0D` |
+
+> ⚠️ Cuando crees la **suscripción VRF en Mainnet**, tendrás un Subscription ID diferente. Actualiza esta sección con el nuevo ID.
 
 ---
 
@@ -171,17 +185,20 @@ Edita el archivo `contracts/.env`:
 AMOY_RPC_URL=https://rpc-amoy.polygon.technology
 # O mejor, usa tu URL de Alchemy para Amoy
 
-# Tu wallet Personal (owner de contratos)
-DEPLOYER_KEY=0xTU_PRIVATE_KEY_PERSONAL_AQUI
+# Tu wallet Personal (owner de contratos) — SIN el prefijo 0x
+DEPLOYER_KEY=TU_PRIVATE_KEY_PERSONAL_AQUI_SIN_0x
 
-# VRF - Lo que obtuviste en vrf.chain.link/amoy
-VRF_SUBSCRIPTION_ID=TU_SUBSCRIPTION_ID_AMOY
+# VRF — Tu suscripción real de Amoy testnet
+VRF_SUBSCRIPTION_ID=7970515401521569318593654502782683303673295181035791822529802935575344475841
 
-# API de Polygonscan (para verificar)
-POLYGONSCAN_KEY=TU_API_KEY_POLYGONSCAN
+# Tu wallet Admin/Operator para testnet
+OPERATOR_ADDRESS=0x1DB00BB0Ab602fD42b89e16CDaD89619a6Df1E0D
+
+# API de Polygonscan (para verificar contratos)
+POLYGONSCAN_KEY=S7YZN15EI67CANCDC6AID18NN5DKI6AEKG
 
 # Token USDT de prueba (se crea en el primer script)
-# PAYMENT_TOKEN_ADDRESS= (se rellena después)
+# PAYMENT_TOKEN_ADDRESS= (se rellena después de ejecutar deploy-mock-token-amoy.js)
 ```
 
 > ⚠️ **NUNCA** hagas `git commit` con el archivo `.env`. Está en `.gitignore` por seguridad.
@@ -229,14 +246,14 @@ Guarda la dirección: `LaBolitaGame deployed to: 0x...`
 ### 2.7 Verificar contratos en Amoy PolygonScan
 
 ```bash
-# Verificar Keno (reemplaza la dirección y parámetros)
+# Verificar Keno (reemplaza DIRECCION_KENO y DIRECCION_USDT_MOCK con las obtenidas al desplegar)
 npx hardhat verify --network amoy \
   DIRECCION_KENO \
   "DIRECCION_USDT_MOCK" \
   "0x343300b5d84D444B2ADc9116FEF1bED02BE49Cf2" \
-  "TU_SUBSCRIPTION_ID" \
+  "7970515401521569318593654502782683303673295181035791822529802935575344475841" \
   "0x816bedba8a50b294e5cbd47842baf240c2385f2eaf719edbd4f250a137a8c899" \
-  "DIRECCION_WALLET_ADMIN"
+  "0x1DB00BB0Ab602fD42b89e16CDaD89619a6Df1E0D"
 ```
 
 Repetir para Bingo y La Bolita con sus parámetros.

@@ -8,7 +8,7 @@ async function main() {
 
   // Configuration
   const paymentToken = process.env.PAYMENT_TOKEN_ADDRESS;
-  const vrfCoordinator = process.env.VRF_COORDINATOR_ADDRESS || "0x343300b5d84999f5708C2095FF3e63E51b2cAdED"; // Amoy VRF V2.5
+  const vrfCoordinator = process.env.VRF_COORDINATOR_ADDRESS || "0x343300b5d84D444B2ADc9116FEF1bED02BE49Cf2"; // Amoy VRF V2.5 — dirección correcta
   const vrfSubId = process.env.VRF_SUBSCRIPTION_ID;
   const vrfKeyHash = process.env.VRF_KEY_HASH || "0x816bedba8a50b294e5cbd47842baf240c2385f2eaf719edbd4f250a137a8c899"; // Amoy 500 gwei
   const operatorAddress = process.env.OPERATOR_ADDRESS || deployer.address;
