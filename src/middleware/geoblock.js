@@ -69,32 +69,32 @@ const checkGeoLocation = async (ip) => {
   }
 
   try {
-    // Usar ip-api.com (gratis, 45 requests/min)
-    const response = await axios.get(`http://ip-api.com/json/${ip}?fields=status,country,countryCode`, {
+    // Primary: ipapi.co (HTTPS, 1000 req/day free)
+    const response = await axios.get(`https://ipapi.co/${ip}/json/`, {
       timeout: 5000
     });
 
-    if (response.data.status === 'success') {
+    if (response.data.country_code) {
       const geoData = {
-        countryCode: response.data.countryCode,
-        country: response.data.country,
-        blocked: BLOCKED_COUNTRIES.includes(response.data.countryCode),
+        countryCode: response.data.country_code,
+        country: response.data.country_name,
+        blocked: BLOCKED_COUNTRIES.includes(response.data.country_code),
         timestamp: Date.now()
       };
       geoCache.set(ip, geoData);
       return geoData;
     }
 
-    // Si falla, intentar con ipapi.co
-    const altResponse = await axios.get(`https://ipapi.co/${ip}/json/`, {
+    // Fallback: ip-api.com (HTTP only, 45 req/min)
+    const altResponse = await axios.get(`http://ip-api.com/json/${ip}?fields=status,country,countryCode`, {
       timeout: 5000
     });
 
-    if (altResponse.data.country_code) {
+    if (altResponse.data.status === 'success') {
       const geoData = {
-        countryCode: altResponse.data.country_code,
-        country: altResponse.data.country_name,
-        blocked: BLOCKED_COUNTRIES.includes(altResponse.data.country_code),
+        countryCode: altResponse.data.countryCode,
+        country: altResponse.data.country,
+        blocked: BLOCKED_COUNTRIES.includes(altResponse.data.countryCode),
         timestamp: Date.now()
       };
       geoCache.set(ip, geoData);
@@ -120,6 +120,17 @@ const geoBlockMiddleware = async (req, res, next) => {
 
   // Skip para rutas de health check
   if (req.path === '/health' || req.path === '/api/health') {
+    return next();
+  }
+
+  // Skip para endpoints publicos de solo lectura (info del juego, sin actividad monetaria)
+  // req.path es relativo a la ruta de montaje (/api), ej: /bingo/rooms
+  const PUBLIC_READ_PATHS = [
+    '/bingo/rooms',
+    '/bingo/config',
+    '/public-config',
+  ];
+  if (PUBLIC_READ_PATHS.some(p => req.path === p || req.path.startsWith(p + '?'))) {
     return next();
   }
 
@@ -150,8 +161,17 @@ const geoBlockMiddleware = async (req, res, next) => {
     req.geoData = geoData;
     next();
   } catch (error) {
-    // En caso de error, permitir (fail-open)
-    console.error('[GeoBlock] Error:', error.message);
+    // Fail-close in production: block when geo lookup fails
+    if (process.env.NODE_ENV === 'production' && process.env.GEOBLOCK_FAIL_OPEN !== 'true') {
+      console.error('[GeoBlock] Geo lookup failed, blocking request (fail-close):', error.message);
+      return res.status(403).json({
+        error: 'Access Denied',
+        message: 'No se pudo verificar tu ubicacion. Intenta de nuevo.',
+        code: 'GEO_UNAVAILABLE'
+      });
+    }
+    // In development or if explicitly configured, fail-open
+    console.error('[GeoBlock] Error (fail-open):', error.message);
     next();
   }
 };
