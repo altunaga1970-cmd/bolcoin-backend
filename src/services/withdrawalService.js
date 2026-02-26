@@ -2,8 +2,6 @@ const pool = require('../db');
 const Withdrawal = require('../models/Withdrawal');
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
-const nowPaymentsService = require('./nowPaymentsService');
-
 const WITHDRAWAL_AUTO_LIMIT = parseFloat(process.env.WITHDRAWAL_AUTO_LIMIT) || 500;
 const WITHDRAWAL_MIN_AMOUNT = parseFloat(process.env.WITHDRAWAL_MIN_AMOUNT) || 5;
 
@@ -123,23 +121,11 @@ async function processWithdrawal(withdrawalId, adminId = null) {
 
     await client.query('COMMIT');
 
-    // Intentar enviar payout via NOWPayments (fuera de la transaccion de DB)
+    // Mark withdrawal as completed (on-chain payouts handled separately)
     try {
-      // Nota: En produccion, esto usaria la API de NOWPayments
-      // Por ahora marcamos como completado para pruebas
-      // const payout = await nowPaymentsService.createPayout(
-      //   withdrawal.wallet_address,
-      //   withdrawal.amount,
-      //   withdrawal.crypto_currency
-      // );
-      // await Withdrawal.markProcessing(withdrawalId, payout.id);
-
-      // Para desarrollo/sandbox, marcar como completado directamente
       await Withdrawal.markCompleted(withdrawalId);
-
     } catch (payoutError) {
-      console.error('Error enviando payout:', payoutError.message);
-      // El retiro queda en estado 'processing' para revision manual
+      console.error('Error completing withdrawal:', payoutError.message);
     }
 
     return await Withdrawal.findById(withdrawalId);

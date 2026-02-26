@@ -159,7 +159,7 @@ src/
 │   ├── keno.js                     # /api/keno/* (play, session, verify, admin)
 │   ├── adminOps.js                 # /api/admin/ops/* (summary, toggles)
 │   ├── adminAuth.js                # /api/admin/auth/* (SIWE login)
-│   ├── payments.js                 # /api/payments/* (NOWPayments)
+│   ├── payments.js                 # /api/payments/* (withdrawals, deposit history)
 │   ├── bankroll.js                 # /api/bankroll/*
 │   ├── claims.js                   # /api/claims/*
 │   └── ... (auth, wallet, draw, bet, lottery, admin*)

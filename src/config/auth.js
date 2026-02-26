@@ -99,7 +99,6 @@ function extractToken(authHeader) {
 // =================================
 
 module.exports = {
-    JWT_SECRET,
     JWT_EXPIRES_IN,
     JWT_ADMIN_EXPIRES_IN,
     generateToken,

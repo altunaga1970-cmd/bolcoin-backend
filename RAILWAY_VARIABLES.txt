@@ -1,0 +1,122 @@
+# ═══════════════════════════════════════════════════════════
+# VARIABLES PARA RAILWAY - BINGO SCHEDULER
+# Copia estas variables a Railway Dashboard → Variables
+# ═══════════════════════════════════════════════════════════
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 1. VARIABLES QUE YA TIENES (VERIFICAR)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BINGO_CONTRACT_ADDRESS=<TU_VALOR_ACTUAL>
+# ✅ Ya la tienes configurada
+# NO cambiar a menos que hayas redeployado el contrato
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 2. VARIABLES CRÍTICAS (DEBES AGREGAR AHORA)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# RPC URL - Alchemy o Infura para Polygon Amoy
+RPC_URL=https://polygon-amoy.g.alchemy.com/v2/TU_ALCHEMY_KEY
+# 📝 Obtener en: https://dashboard.alchemy.com
+# O usar: https://polygon-amoy.infura.io/v3/TU_INFURA_KEY
+
+# Private Key del Operador (⚠️ CRÍTICO - debe coincidir con el operator del contrato)
+OPERATOR_PRIVATE_KEY=0x...
+# ⚠️ Esta debe ser la private key del wallet que está configurado como "operator" en el contrato
+# ⚠️ NUNCA compartir esta key
+# ⚠️ Después del deployment, migrar a Railway Secrets
+
+# Habilitar Scheduler
+ENABLE_BINGO_SCHEDULER=true
+# ✅ DEBE ser "true" para que el scheduler arranque
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 3. VARIABLES RECOMENDADAS (RPC FALLBACK)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# RPC Fallback #1 - Polygon Amoy público
+RPC_FALLBACK_1=https://rpc-amoy.polygon.technology
+
+# RPC Fallback #2 - Ankr (si tienes API key)
+RPC_FALLBACK_2=https://rpc.ankr.com/polygon_amoy
+# O dejar vacío si solo tienes un RPC
+
+# RPC Fallback #3 (opcional)
+# RPC_FALLBACK_3=
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 4. CONFIGURACIÓN DEL SCHEDULER (OPCIONAL - USA DEFAULTS)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Número de salas concurrentes (default: 4)
+NUM_ROOMS=4
+
+# Ventana de compra en segundos (default: 45)
+BUY_WINDOW_SECONDS=45
+
+# Intervalo entre rondas en segundos (default: 120 = 2 min)
+ROUND_INTERVAL_SECONDS=120
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 5. RECOVERY & CIRCUIT BREAKER (OPCIONAL - USA DEFAULTS)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Habilitar orphan recovery (default: true)
+ENABLE_ORPHAN_RECOVERY=true
+
+# Intervalo de recovery en ms (default: 300000 = 5 min)
+ORPHAN_RECOVERY_INTERVAL=300000
+
+# Max fallos consecutivos antes de circuit breaker (default: 5)
+MAX_CONSECUTIVE_FAILURES=5
+
+# Cooldown del circuit breaker en ms (default: 60000 = 1 min)
+CIRCUIT_BREAKER_COOLDOWN=60000
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 6. CORS & FRONTEND (SI TIENES FRONTEND)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Frontend URL (tu Cloudflare Pages o dominio)
+FRONTEND_URL=https://tu-frontend.pages.dev
+
+# CORS allowed origins (separados por coma)
+ALLOWED_ORIGINS=https://tu-frontend.pages.dev,https://www.tu-frontend.pages.dev
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 7. OTROS (OPCIONAL)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Node environment
+NODE_ENV=production
+
+# Log level
+LOG_LEVEL=info
+
+# Puerto (Railway lo asigna automáticamente, pero puedes especificar)
+# PORT=5000
+
+
+# ═══════════════════════════════════════════════════════════
+# RESUMEN DE VARIABLES MÍNIMAS REQUERIDAS:
+# ═══════════════════════════════════════════════════════════
+#
+# 1. BINGO_CONTRACT_ADDRESS  (ya la tienes ✅)
+# 2. RPC_URL                 (AGREGAR)
+# 3. OPERATOR_PRIVATE_KEY    (AGREGAR)
+# 4. ENABLE_BINGO_SCHEDULER=true (AGREGAR)
+#
+# Recomendadas:
+# 5. RPC_FALLBACK_1
+# 6. FRONTEND_URL
+# 7. ALLOWED_ORIGINS
+#
+# Total mínimo: 4 variables
+# Total recomendado: 7+ variables
+# ═══════════════════════════════════════════════════════════

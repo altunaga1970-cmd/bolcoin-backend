@@ -474,6 +474,7 @@ contract LaBolitaGame is VRFConsumerBaseV2Plus, ReentrancyGuard, Pausable {
     }
 
     /// @notice Retry payout for a resolved winning bet where transfer failed
+    /// @dev Sets payout to 0 BEFORE transfer (checks-effects-interactions) to prevent double-payment
     function retryUnpaidBet(uint256 betId) external nonReentrant {
         Bet storage b = bets[betId];
         require(b.resolved && b.won && b.payout > 0, "Not eligible");
@@ -481,6 +482,8 @@ contract LaBolitaGame is VRFConsumerBaseV2Plus, ReentrancyGuard, Pausable {
         uint256 payout = uint256(b.payout);
         if (availablePool() < payout) revert InsufficientPool();
 
+        // CEI: zero out payout BEFORE external call to prevent re-entrancy / double-claim
+        b.payout = 0;
         paymentToken.safeTransfer(b.player, payout);
     }
 

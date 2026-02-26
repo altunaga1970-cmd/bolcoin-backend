@@ -45,11 +45,13 @@ function requireAdmin(req, res, next) {
             });
         }
 
-        // Setear req.admin para uso en rutas
+        // Setear req.admin con permisos FRESCOS (no del JWT cache)
+        const freshRole = getAdminRole(decoded.address);
+        const freshPermissions = ROLE_PERMISSIONS[freshRole] || [];
         req.admin = {
             address: decoded.address,
-            role: decoded.role,
-            permissions: decoded.permissions || []
+            role: freshRole,
+            permissions: freshPermissions
         };
 
         // Compatibilidad: algunas rutas usan req.user.address

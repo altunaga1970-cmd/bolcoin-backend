@@ -31,11 +31,11 @@ const commitLimiter = rateLimit({
   message: { success: false, message: 'Demasiados commits. Espera un momento.' }
 });
 
-// Rate limiting for play endpoint: 10 plays per minute per IP
+// Rate limiting for play endpoint: 6 plays per minute per wallet (1 every 10s avg)
 const playLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 10,
-  keyGenerator: (req) => req.user?.address || req.headers['x-wallet-address'] || 'anonymous',
+  max: 6,
+  keyGenerator: (req) => req.user?.address || req.headers['x-wallet-address'] || req.ip || 'anonymous',
   standardHeaders: true,
   legacyHeaders: false,
   validate: { xForwardedForHeader: false },
