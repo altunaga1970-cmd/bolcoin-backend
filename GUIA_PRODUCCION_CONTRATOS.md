@@ -9,12 +9,12 @@
 
 ## TUS CREDENCIALES ACTUALES (GUARDA ESTO SEGURO)
 
-Estos son los datos reales que tienes configurados. Guarda este archivo de forma privada.
+⚠️ **NO guardes credenciales reales en este archivo** — está en git. Usa un gestor de secretos (1Password, Bitwarden) o Railway Variables directamente.
 
-| Dato | Valor |
-|------|-------|
-| **Polygonscan API Key** | `S7YZN15EI67CANCDC6AID18NN5DKI6AEKG` |
-| **VRF Subscription ID (Amoy Testnet)** | `7970515401521569318593654502782683303673295181035791822529802935575344475841` |
+| Dato | Dónde encontrarlo |
+|------|-------------------|
+| **Polygonscan API Key** | https://polygonscan.com/myapikey (REVOCADA — crear nueva) |
+| **VRF Subscription ID (Amoy Testnet)** | `731426371446960705615864914427308857163591349971614776238316917030437647673` |
 | **Wallet Amoy Testnet (Operator)** | `0x1DB00BB0Ab602fD42b89e16CDaD89619a6Df1E0D` |
 
 > ⚠️ Cuando crees la **suscripción VRF en Mainnet**, tendrás un Subscription ID diferente. Actualiza esta sección con el nuevo ID.
