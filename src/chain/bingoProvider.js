@@ -61,10 +61,32 @@ function isBingoOnChain() {
   return !!BINGO_CONTRACT_ADDRESS;
 }
 
+/**
+ * Reset the NonceManager so it re-reads the nonce from the chain on the next tx.
+ * Call this when a NONCE_EXPIRED error is caught (stale in-memory nonce).
+ */
+function resetNonceManager() {
+  if (_nonceManagedSigner) {
+    _nonceManagedSigner.reset();
+    console.log('[Chain] NonceManager reset — will re-sync nonce from chain on next tx');
+  }
+}
+
+/**
+ * Returns true if the error is a nonce-related rejection from the node.
+ */
+function isNonceError(err) {
+  return err.code === 'NONCE_EXPIRED'
+    || err.message?.includes('nonce too low')
+    || err.message?.includes('nonce has already been used');
+}
+
 module.exports = {
   getBingoContract,
   getBingoContractReadOnly,
   isBingoOnChain,
   BINGO_CONTRACT_ADDRESS,
   AMOY_GAS_OVERRIDES,
+  resetNonceManager,
+  isNonceError,
 };

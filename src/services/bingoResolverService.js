@@ -315,18 +315,38 @@ async function resolveRound(roundId) {
   // 6. Call contract — if this fails, roll back resolving → vrf_fulfilled so it can retry
   let receipt;
   try {
-    const { getBingoContract, AMOY_GAS_OVERRIDES } = require('../chain/bingoProvider');
+    const { getBingoContract, AMOY_GAS_OVERRIDES, resetNonceManager, isNonceError } = require('../chain/bingoProvider');
     const bingoContract = getBingoContract();
 
-    const tx = await bingoContract.resolveRound(
-      roundId,
-      lineWinnerAddresses,
-      winners.lineWinnerBall,
-      bingoWinnerAddresses,
-      winners.bingoWinnerBall,
-      signature,
-      AMOY_GAS_OVERRIDES
-    );
+    let tx;
+    try {
+      tx = await bingoContract.resolveRound(
+        roundId,
+        lineWinnerAddresses,
+        winners.lineWinnerBall,
+        bingoWinnerAddresses,
+        winners.bingoWinnerBall,
+        signature,
+        AMOY_GAS_OVERRIDES
+      );
+    } catch (firstErr) {
+      if (isNonceError(firstErr)) {
+        console.warn(`[BingoResolver] resolveRound(${roundId}): nonce error, resetting NonceManager and retrying once`);
+        resetNonceManager();
+        tx = await bingoContract.resolveRound(
+          roundId,
+          lineWinnerAddresses,
+          winners.lineWinnerBall,
+          bingoWinnerAddresses,
+          winners.bingoWinnerBall,
+          signature,
+          AMOY_GAS_OVERRIDES
+        );
+      } else {
+        throw firstErr;
+      }
+    }
+
     receipt = await tx.wait();
     console.log(`[BingoResolver] resolveRound tx: ${receipt.hash}`);
   } catch (contractErr) {

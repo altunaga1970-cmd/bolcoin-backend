@@ -302,9 +302,12 @@ class BingoEventService {
       const lineWinnerAddr  = lineWinners.length > 0  ? lineWinners[0].toLowerCase()  : null;
       const bingoWinnerAddr = bingoWinners.length > 0 ? bingoWinners[0].toLowerCase() : null;
 
+      // Preserve 'drawing' status — the scheduler's finalizeDrawing() handles
+      // the drawing → resolved transition after the animation window elapses.
+      // Only advance to 'resolved' if the round is not currently animating.
       await pool.query(
         `UPDATE bingo_rounds SET
-           status = 'resolved',
+           status = CASE WHEN status = 'drawing' THEN 'drawing' ELSE 'resolved' END,
            line_winner = $1,
            bingo_winner = $2,
            fee_amount = $3,
@@ -316,7 +319,7 @@ class BingoEventService {
            line_winner_ball = $9,
            bingo_winner_ball = $10,
            updated_at = NOW()
-         WHERE round_id = $11 AND status NOT IN ('cancelled', 'open', 'closed')`,
+         WHERE round_id = $11 AND status NOT IN ('cancelled', 'open', 'closed', 'resolved')`,
         [
           lineWinnerAddr,
           bingoWinnerAddr,
