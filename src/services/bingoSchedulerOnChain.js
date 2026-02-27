@@ -210,19 +210,16 @@ async function roomLoop(roomNumber) {
         throw new Error(`createRound returned invalid roundId: ${roundId}`);
       }
 
-      // Assign room_number — retry briefly since the event-service INSERT may lag
-      let assigned = false;
-      for (let attempt = 0; attempt < 10 && !assigned; attempt++) {
-        const { rowCount } = await pool.query(
-          'UPDATE bingo_rounds SET room_number = $1 WHERE round_id = $2',
-          [roomNumber, roundId]
-        );
-        if (rowCount > 0) { assigned = true; break; }
-        await sleep(500); // wait for event-service to insert the row
-      }
-      if (!assigned) {
-        throw new Error(`Failed to assign room_number for round #${roundId} after retries`);
-      }
+      // Upsert the DB row with room_number directly. bingoEventService may not
+      // have processed the RoundCreated log yet (polling lag up to ~5s), so we
+      // can't rely on the row existing. The event service uses ON CONFLICT DO UPDATE
+      // but never touches room_number, so this upsert is safe and idempotent.
+      await pool.query(
+        `INSERT INTO bingo_rounds (round_id, status, scheduled_close, room_number, created_at, updated_at)
+         VALUES ($1, 'open', $2, $3, NOW(), NOW())
+         ON CONFLICT (round_id) DO UPDATE SET room_number = $3, updated_at = NOW()`,
+        [roundId, new Date(closesAt * 1000), roomNumber]
+      );
       const scheduledClose = new Date(closesAt * 1000).toISOString();
       _roomStates[roomNumber] = {
         phase: 'buying',
@@ -250,7 +247,7 @@ async function roomLoop(roomNumber) {
 
       if (!resolution) {
         // Timeout or stop — move to cooldown and try next round
-        console.warn(`[BingoOnChainScheduler] Room ${roomNumber} Round #${roundId} timed out waiting for resolution`);
+        console.log(`[BingoOnChainScheduler] Room ${roomNumber} Round #${roundId} cancelled or timed out — skipping draw`);
       } else {
         // 5. Wait for draw animation to complete (frontend syncs to draw_started_at)
         const drawDurationMs = calcDrawDurationMs(resolution.lineWinnerBall, resolution.bingoWinnerBall);
