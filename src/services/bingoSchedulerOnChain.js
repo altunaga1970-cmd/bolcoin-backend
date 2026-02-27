@@ -220,6 +220,16 @@ async function roomLoop(roomNumber) {
          ON CONFLICT (round_id) DO UPDATE SET room_number = $3, updated_at = NOW()`,
         [roundId, new Date(closesAt * 1000), roomNumber]
       );
+
+      // Cancel any stale DB rounds for this room that are not the current round.
+      // This cleans up off-chain rounds (high IDs from old mode) and leftover
+      // open rows from previous scheduler sessions so the lobby shows the correct
+      // on-chain round instead of a ghost round that doesn't exist in the contract.
+      await pool.query(
+        `UPDATE bingo_rounds SET status = 'cancelled', updated_at = NOW()
+         WHERE room_number = $1 AND status = 'open' AND round_id != $2`,
+        [roomNumber, roundId]
+      );
       const scheduledClose = new Date(closesAt * 1000).toISOString();
       _roomStates[roomNumber] = {
         phase: 'buying',
