@@ -15,6 +15,9 @@ const gameConfigService = require('./gameConfigService');
 // Configuración del contrato
 const RPC_URL = process.env.RPC_URL || 'http://127.0.0.1:8545';
 const CONTRACT_ADDRESS = process.env.KENO_CONTRACT_ADDRESS;
+// When KENO_CONTRACT_ADDRESS is set the contract is the on-chain VRF game (not the
+// Phase-2 settlement contract). The session service is not used for gameplay in this mode.
+const KENO_ON_CHAIN = !!CONTRACT_ADDRESS;
 const OPERATOR_PRIVATE_KEY = process.env.OPERATOR_PRIVATE_KEY;
 
 // ABI para liquidación (Phase 3: 5 parameters with sessionId + signature)
@@ -105,6 +108,10 @@ async function signSettlement(userAddress, netAmountWei, isProfit, sessionIdByte
  */
 async function getContractBalance(walletAddress) {
   try {
+    // On-chain VRF mode: KENO_CONTRACT_ADDRESS is the game contract, not the
+    // Phase-2 settlement contract. Session balances are irrelevant — return 0.
+    if (KENO_ON_CHAIN) return 0;
+
     initContract();
 
     // Off-chain mode: read balance from DB instead of contract

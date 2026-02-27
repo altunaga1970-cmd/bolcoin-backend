@@ -35,10 +35,10 @@ const commitLimiter = rateLimit({
 const playLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 6,
-  keyGenerator: (req) => req.user?.address || req.headers['x-wallet-address'] || req.ip || 'anonymous',
+  keyGenerator: (req) => req.user?.address || req.headers['x-wallet-address'] || 'anonymous',
   standardHeaders: true,
   legacyHeaders: false,
-  validate: { xForwardedForHeader: false },
+  validate: { xForwardedForHeader: false, ip: false },
   message: { success: false, message: 'Demasiadas jugadas. Espera un momento.' }
 });
 
