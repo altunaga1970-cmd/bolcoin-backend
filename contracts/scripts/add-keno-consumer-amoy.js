@@ -26,10 +26,20 @@
 
 const { ethers } = require("hardhat");
 
-// ─── Amoy constants (do NOT change) ──────────────────────────────────────────
-const VRF_COORDINATOR = "0x343300b5d84D444B2ADc9116FEF1bED02BE49Cf2";
+// ─── Amoy constants ───────────────────────────────────────────────────────────
+// SUB_ID is read from contracts/.env (VRF_SUBSCRIPTION_ID) — update that file
+// when you create or change your subscription on https://vrf.chain.link
+const VRF_COORDINATOR = process.env.VRF_COORDINATOR_ADDRESS || "0x343300b5d84D444B2ADc9116FEF1bED02BE49Cf2";
 const KENO_ADDRESS    = "0xAa1d6945e691807CBCC239F6C89C6469E0eD4998";
-const SUB_ID          = "7970515401521569318593654502782683303673295181035791822529802935575344475841";
+const SUB_ID          = process.env.VRF_SUBSCRIPTION_ID;
+
+if (!SUB_ID) {
+  console.error("ERROR: VRF_SUBSCRIPTION_ID is not set in contracts/.env");
+  console.error("  1. Go to https://vrf.chain.link → Polygon Amoy");
+  console.error("  2. Create or find your subscription");
+  console.error("  3. Set VRF_SUBSCRIPTION_ID=<your-sub-id> in contracts/.env");
+  process.exit(1);
+}
 
 // Minimal ABI — only what we need
 const COORDINATOR_ABI = [
