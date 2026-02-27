@@ -27,9 +27,9 @@ const gameConfigService = require('./gameConfigService');
 const { getBingoContractReadOnly } = require('../chain/bingoProvider');
 
 const NUM_ROOMS        = 4;
-const BUY_WINDOW_SECONDS = 45;
+const BUY_WINDOW_SECONDS = 180; // 3 min buy window
 const COOLDOWN_SECONDS  = 30;
-const STAGGER_SECONDS   = 103; // ~7min cycle / 4 rooms
+const STAGGER_SECONDS   = 165; // spread 4 rooms across the buy window (~180s / 4 rooms)
 
 // How long to wait for Chainlink VRF (real network ~120s; local mock ~instant)
 const VRF_WAIT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes

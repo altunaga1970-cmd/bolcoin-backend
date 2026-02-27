@@ -195,10 +195,10 @@ async function getVerificationData(roundId) {
  * Admin: create a new round on-chain
  */
 async function createRound(scheduledCloseTimestamp) {
-  const { getBingoContract } = require('../chain/bingoProvider');
+  const { getBingoContract, AMOY_GAS_OVERRIDES } = require('../chain/bingoProvider');
   const contract = getBingoContract();
 
-  const tx = await contract.createRound(scheduledCloseTimestamp);
+  const tx = await contract.createRound(scheduledCloseTimestamp, AMOY_GAS_OVERRIDES);
   const receipt = await tx.wait();
 
   // Parse RoundCreated event
@@ -221,10 +221,10 @@ async function createRound(scheduledCloseTimestamp) {
  * Admin: close a round and request VRF
  */
 async function closeRound(roundId) {
-  const { getBingoContract } = require('../chain/bingoProvider');
+  const { getBingoContract, AMOY_GAS_OVERRIDES } = require('../chain/bingoProvider');
   const contract = getBingoContract();
 
-  const tx = await contract.closeAndRequestVRF(roundId);
+  const tx = await contract.closeAndRequestVRF(roundId, AMOY_GAS_OVERRIDES);
   const receipt = await tx.wait();
 
   console.log(`[Bingo] Round ${roundId} closed, VRF requested. tx: ${receipt.hash}`);
