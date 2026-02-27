@@ -98,10 +98,41 @@ class BingoEventService {
         }
         this.lastBlockProcessed = currentBlock;
       }
+
+      // Retry any rounds stuck in vrf_fulfilled (e.g. prior resolveRound tx failed)
+      await this._retryVrfFulfilledRounds();
     } catch (err) {
       console.error('[BingoEvents] Poll error:', err.message);
     }
     this._schedulePoll();
+  }
+
+  /**
+   * Retry resolution for rounds stuck in vrf_fulfilled state.
+   * This handles the case where a previous resolveRound() call failed
+   * (e.g. gas too low on Amoy) and the round was rolled back to vrf_fulfilled.
+   * Rounds are only retried after 30s to give the in-progress resolve time to finish.
+   */
+  async _retryVrfFulfilledRounds() {
+    try {
+      const { rows } = await pool.query(
+        `SELECT round_id, vrf_random_word FROM bingo_rounds
+         WHERE status = 'vrf_fulfilled'
+           AND vrf_random_word IS NOT NULL
+           AND updated_at < NOW() - INTERVAL '30 seconds'`
+      );
+      for (const { round_id, vrf_random_word } of rows) {
+        console.log(`[BingoEvents] Retrying stuck vrf_fulfilled round #${round_id}`);
+        try {
+          const bingoResolverService = require('./bingoResolverService');
+          await bingoResolverService.resolveRound(round_id);
+        } catch (err) {
+          console.error(`[BingoEvents] Retry resolveRound(${round_id}) failed:`, err.message);
+        }
+      }
+    } catch (err) {
+      console.error('[BingoEvents] _retryVrfFulfilledRounds error:', err.message);
+    }
   }
 
   async _dispatch(parsed) {

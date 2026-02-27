@@ -315,7 +315,7 @@ async function resolveRound(roundId) {
   // 6. Call contract — if this fails, roll back resolving → vrf_fulfilled so it can retry
   let receipt;
   try {
-    const { getBingoContract } = require('../chain/bingoProvider');
+    const { getBingoContract, AMOY_GAS_OVERRIDES } = require('../chain/bingoProvider');
     const bingoContract = getBingoContract();
 
     const tx = await bingoContract.resolveRound(
@@ -324,7 +324,8 @@ async function resolveRound(roundId) {
       winners.lineWinnerBall,
       bingoWinnerAddresses,
       winners.bingoWinnerBall,
-      signature
+      signature,
+      AMOY_GAS_OVERRIDES
     );
     receipt = await tx.wait();
     console.log(`[BingoResolver] resolveRound tx: ${receipt.hash}`);
@@ -368,6 +369,8 @@ async function resolveRound(roundId) {
     );
 
     // Update bingo_rounds — only advance from 'resolving', never overwrite a terminal status (F-09)
+    // Also write line_winner_ball and bingo_winner_ball here so the scheduler can read correct
+    // draw duration immediately (without waiting for _syncRoundFromContract in the next poll cycle).
     await client.query(
       `UPDATE bingo_rounds SET
          status = 'drawing',
@@ -376,13 +379,17 @@ async function resolveRound(roundId) {
          line_winner = $2,
          bingo_winner = $3,
          resolution_tx = $4,
+         line_winner_ball = $5,
+         bingo_winner_ball = $6,
          updated_at = NOW()
-       WHERE round_id = $5 AND status = 'resolving'`,
+       WHERE round_id = $7 AND status = 'resolving'`,
       [
         JSON.stringify(drawnBalls),
         winners.lineWinner !== ZERO_ADDRESS ? winners.lineWinner : null,
         winners.bingoWinner !== ZERO_ADDRESS ? winners.bingoWinner : null,
         receipt.hash,
+        winners.lineWinnerBall,
+        winners.bingoWinnerBall,
         roundId,
       ]
     );
