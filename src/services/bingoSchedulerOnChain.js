@@ -24,6 +24,7 @@
 const pool = require('../db');
 const bingoService = require('./bingoService');
 const gameConfigService = require('./gameConfigService');
+const { getBingoContractReadOnly } = require('../chain/bingoProvider');
 
 const NUM_ROOMS        = 4;
 const BUY_WINDOW_SECONDS = 45;
@@ -96,6 +97,88 @@ async function waitForVrfAndResolution(roundId) {
 
   console.warn(`[BingoOnChainScheduler] Round #${roundId} VRF wait timeout after ${VRF_WAIT_TIMEOUT_MS / 1000}s`);
   return null;
+}
+
+/**
+ * On restart the contract may already have up to MAX_OPEN_ROUNDS open.
+ * Close each one (waiting for its buy-window if needed) so room loops
+ * can safely call createRound() without hitting MaxOpenRoundsReached.
+ *
+ * Rounds are closed sequentially to avoid operator-wallet nonce conflicts.
+ */
+async function recoverOpenRounds() {
+  let contract;
+  try {
+    contract = getBingoContractReadOnly();
+  } catch (err) {
+    console.warn('[BingoOnChainScheduler] recoverOpenRounds: contract unavailable:', err.message);
+    return;
+  }
+
+  let openIds;
+  try {
+    openIds = await contract.getOpenRounds();
+  } catch (err) {
+    console.warn('[BingoOnChainScheduler] recoverOpenRounds: getOpenRounds() failed:', err.message);
+    return;
+  }
+
+  if (openIds.length === 0) {
+    console.log('[BingoOnChainScheduler] Recovery: no open rounds — starting fresh');
+    return;
+  }
+
+  const roundIds = openIds.map(id => Number(id));
+  console.log(`[BingoOnChainScheduler] Recovery: ${roundIds.length} open round(s) found: [${roundIds.join(', ')}]`);
+
+  // Fetch scheduledClose for each round
+  const tasks = await Promise.all(roundIds.map(async (roundId) => {
+    try {
+      const info = await contract.getRoundInfo(roundId);
+      return { roundId, scheduledClose: Number(info.scheduledClose) };
+    } catch (err) {
+      console.warn(`[BingoOnChainScheduler] Recovery: getRoundInfo(${roundId}) failed — treating as expired`);
+      return { roundId, scheduledClose: 0 };
+    }
+  }));
+
+  // Sort by scheduledClose ASC so earliest-expiring rounds close first
+  tasks.sort((a, b) => a.scheduledClose - b.scheduledClose);
+
+  for (const { roundId, scheduledClose } of tasks) {
+    if (_stopRequested) return;
+
+    // Wait until the buy-window has closed (contract requires block.timestamp >= scheduledClose)
+    const waitMs = Math.max(0, (scheduledClose - Math.floor(Date.now() / 1000)) * 1000);
+    if (waitMs > 0) {
+      console.log(`[BingoOnChainScheduler] Recovery: Round #${roundId} buy-window expires in ${Math.ceil(waitMs / 1000)}s — waiting`);
+      await sleep(waitMs + 2000); // +2s buffer
+    }
+    if (_stopRequested) return;
+
+    try {
+      await bingoService.closeRound(roundId);
+      console.log(`[BingoOnChainScheduler] Recovery: Round #${roundId} closed, awaiting VRF`);
+    } catch (err) {
+      console.error(`[BingoOnChainScheduler] Recovery: closeRound(${roundId}) failed:`, err.message);
+      continue; // If already closed by another path, proceed to next
+    }
+
+    const resolution = await waitForVrfAndResolution(roundId);
+    if (resolution) {
+      const drawMs = calcDrawDurationMs(resolution.lineWinnerBall, resolution.bingoWinnerBall);
+      await sleep(drawMs);
+      await pool.query(
+        `UPDATE bingo_rounds SET status = 'resolved', updated_at = NOW() WHERE round_id = $1 AND status = 'drawing'`,
+        [roundId]
+      );
+      console.log(`[BingoOnChainScheduler] Recovery: Round #${roundId} resolved`);
+    } else {
+      console.warn(`[BingoOnChainScheduler] Recovery: Round #${roundId} VRF timed out — skipping`);
+    }
+  }
+
+  console.log('[BingoOnChainScheduler] Recovery complete — starting room loops');
 }
 
 /**
@@ -224,6 +307,11 @@ async function start() {
   _running = true;
   _stopRequested = false;
   console.log(`[BingoOnChainScheduler] Starting ${NUM_ROOMS}-room on-chain scheduler (contract: ${process.env.BINGO_CONTRACT_ADDRESS})`);
+
+  // Close any open rounds left over from a previous session before creating new ones.
+  // This prevents MaxOpenRoundsReached() on restart.
+  await recoverOpenRounds();
+  if (_stopRequested) { _running = false; return; }
 
   for (let room = 1; room <= NUM_ROOMS; room++) {
     _roomStates[room] = { phase: 'starting', roundId: null };
