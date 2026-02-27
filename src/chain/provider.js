@@ -5,6 +5,14 @@ const LA_BOLITA_ABI = require('./abi/LaBolita.abi.json');
 const RPC_URL = process.env.RPC_URL || process.env.POLYGON_RPC_URL;
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
 const OPERATOR_PRIVATE_KEY = process.env.OPERATOR_PRIVATE_KEY;
+// TOKEN_ADDRESS: USDT contract on the active network (6 decimals on Polygon mainnet + Amoy)
+const TOKEN_ADDRESS = process.env.TOKEN_ADDRESS || process.env.PAYMENT_TOKEN_ADDRESS;
+const USDT_DECIMALS = 6;
+
+// Minimal ERC-20 ABI for token transfer
+const ERC20_TRANSFER_ABI = [
+  'function transfer(address to, uint256 amount) returns (bool)',
+];
 
 let _provider = null;
 let _signer = null;
@@ -60,9 +68,53 @@ function getLaBolitaContract() {
     return _contract;
 }
 
+/**
+ * Transfer USDT from the operator wallet to a recipient address.
+ *
+ * Pattern (H-04 fix):
+ *   1. Submit ERC-20 transfer transaction
+ *   2. Wait for 1 on-chain confirmation (60s timeout)
+ *   3. Return txHash on success; throw on revert or timeout
+ *
+ * @param {string} toAddress  - Recipient wallet address
+ * @param {string|number} amountUsdt - Amount in USDT (e.g. "10.50")
+ * @returns {Promise<string>} Transaction hash
+ */
+async function sendUsdtTransfer(toAddress, amountUsdt) {
+    if (!TOKEN_ADDRESS) {
+        throw new Error(
+            '[Chain] TOKEN_ADDRESS not configured. Set TOKEN_ADDRESS env variable.'
+        );
+    }
+
+    const signer = getSigner(); // throws if OPERATOR_PRIVATE_KEY missing
+    const token = new ethers.Contract(TOKEN_ADDRESS, ERC20_TRANSFER_ABI, signer);
+    const amountUnits = ethers.parseUnits(String(amountUsdt), USDT_DECIMALS);
+
+    const tx = await token.transfer(toAddress, amountUnits);
+    console.log(`[Chain] USDT transfer submitted: ${tx.hash} → ${toAddress} (${amountUsdt} USDT)`);
+
+    // Wait for 1 confirmation with 60s timeout
+    const TIMEOUT_MS = 60_000;
+    const receipt = await Promise.race([
+        tx.wait(1),
+        new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`Transfer timed out after ${TIMEOUT_MS / 1000}s: ${tx.hash}`)), TIMEOUT_MS)
+        ),
+    ]);
+
+    if (!receipt || receipt.status !== 1) {
+        throw new Error(`[Chain] Transfer reverted on-chain: ${tx.hash}`);
+    }
+
+    console.log(`[Chain] USDT transfer confirmed: ${tx.hash} (block ${receipt.blockNumber})`);
+    return tx.hash;
+}
+
 module.exports = {
     getProvider,
     getSigner,
     getLaBolitaContract,
+    sendUsdtTransfer,
     LA_BOLITA_ABI
 };

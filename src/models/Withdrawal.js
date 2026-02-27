@@ -225,9 +225,11 @@ const Withdrawal = {
 
   /**
    * Marcar retiro como completado
+   * @param {number} id - Withdrawal ID
+   * @param {string} [txHash] - On-chain transaction hash (stored in payout_id)
    */
-  async markCompleted(id) {
-    return this.updateStatus(id, 'completed');
+  async markCompleted(id, txHash = null) {
+    return this.updateStatus(id, 'completed', txHash ? { payout_id: txHash } : {});
   }
 };
 

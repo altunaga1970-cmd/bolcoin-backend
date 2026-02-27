@@ -3,6 +3,7 @@ const Withdrawal = require('../models/Withdrawal');
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
 const { toCents, fromCents } = require('../utils/money');
+const { sendUsdtTransfer, getSigner } = require('../chain/provider');
 const WITHDRAWAL_AUTO_LIMIT = parseFloat(process.env.WITHDRAWAL_AUTO_LIMIT) || 500;
 const WITHDRAWAL_MIN_AMOUNT = parseFloat(process.env.WITHDRAWAL_MIN_AMOUNT) || 5;
 
@@ -55,9 +56,72 @@ async function requestWithdrawal(userId, amount, cryptoCurrency, walletAddress) 
 }
 
 /**
- * Procesar un retiro (deducir balance y enviar payout)
+ * Restore a user's balance after a failed on-chain withdrawal.
+ * Runs in its own DB connection (the original is already released).
+ */
+async function _restoreWithdrawalBalance(userId, amount, withdrawalId, failureReason) {
+  const restoreClient = await pool.connect();
+  try {
+    await restoreClient.query('BEGIN');
+
+    // Read current (deducted) balance, apply lock
+    const balanceResult = await restoreClient.query(
+      'SELECT balance FROM users WHERE id = $1 FOR UPDATE',
+      [userId]
+    );
+    const balanceBefore = balanceResult.rows[0]?.balance ?? 0;
+    const restoredBalance = fromCents(toCents(balanceBefore) + toCents(amount));
+
+    // Credit balance back
+    await restoreClient.query(
+      'UPDATE users SET balance = $1, version = version + 1 WHERE id = $2',
+      [restoredBalance, userId]
+    );
+
+    // Audit trail for the reversal
+    await restoreClient.query(
+      `INSERT INTO transactions
+       (user_id, transaction_type, amount, balance_before, balance_after, reference_type, reference_id, description)
+       VALUES ($1, 'refund', $2, $3, $4, 'withdrawal', $5, $6)`,
+      [
+        userId,
+        amount,
+        balanceBefore,
+        restoredBalance,
+        withdrawalId,
+        `Reverso de retiro ${withdrawalId}: ${(failureReason || 'fallo on-chain').slice(0, 200)}`
+      ]
+    );
+
+    await restoreClient.query('COMMIT');
+    console.log(`[WithdrawalService] Balance restored for user ${userId}: +${amount} USDT (withdrawal ${withdrawalId})`);
+  } catch (restoreError) {
+    await restoreClient.query('ROLLBACK');
+    // Log loudly — operator must reconcile manually
+    console.error(
+      `[WithdrawalService] CRITICAL: balance restore failed for user ${userId}, withdrawal ${withdrawalId}:`,
+      restoreError.message
+    );
+    throw restoreError;
+  } finally {
+    restoreClient.release();
+  }
+}
+
+/**
+ * Procesar un retiro:
+ *   Phase 1 (DB): deduct balance, create transaction record, mark 'processing'
+ *   Phase 2 (on-chain): transfer USDT via operator wallet, verify receipt
+ *   On phase-2 failure: restore balance and mark withdrawal 'failed'
  */
 async function processWithdrawal(withdrawalId, adminId = null) {
+  // Fail fast if operator wallet is not configured — before touching DB
+  try { getSigner(); } catch (signerError) {
+    throw new Error(`Retiro no disponible: ${signerError.message}`);
+  }
+
+  // ── Phase 1: DB transaction ───────────────────────────────────────────
+  let withdrawalRow;
   const client = await pool.connect();
 
   try {
@@ -112,7 +176,7 @@ async function processWithdrawal(withdrawalId, adminId = null) {
       ]
     );
 
-    // Actualizar estado del retiro
+    // Marcar como en proceso
     await client.query(
       `UPDATE withdrawals
        SET status = 'processing', approved_by = $1, approved_at = CURRENT_TIMESTAMP
@@ -121,15 +185,7 @@ async function processWithdrawal(withdrawalId, adminId = null) {
     );
 
     await client.query('COMMIT');
-
-    // Mark withdrawal as completed (on-chain payouts handled separately)
-    try {
-      await Withdrawal.markCompleted(withdrawalId);
-    } catch (payoutError) {
-      console.error('Error completing withdrawal:', payoutError.message);
-    }
-
-    return await Withdrawal.findById(withdrawalId);
+    withdrawalRow = withdrawal; // save for phase 2
 
   } catch (error) {
     await client.query('ROLLBACK');
@@ -137,6 +193,24 @@ async function processWithdrawal(withdrawalId, adminId = null) {
   } finally {
     client.release();
   }
+
+  // ── Phase 2: on-chain transfer ────────────────────────────────────────
+  try {
+    const txHash = await sendUsdtTransfer(withdrawalRow.wallet_address, withdrawalRow.amount);
+    await Withdrawal.markCompleted(withdrawalId, txHash);
+  } catch (payoutError) {
+    console.error('[WithdrawalService] On-chain transfer failed:', payoutError.message);
+    // Balance was already deducted — restore it
+    await _restoreWithdrawalBalance(
+      withdrawalRow.user_id,
+      withdrawalRow.amount,
+      withdrawalId,
+      payoutError.message
+    );
+    throw new Error('Retiro fallido: transferencia on-chain no completada. Balance restaurado.');
+  }
+
+  return await Withdrawal.findById(withdrawalId);
 }
 
 /**

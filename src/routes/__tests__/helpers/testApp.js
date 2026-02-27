@@ -208,6 +208,8 @@ jest.mock('../../../chain/provider', () => ({
   getLaBolitaContract: jest.fn(),
   getKenoContract: jest.fn(),
   getBingoContract: jest.fn(),
+  getSigner: jest.fn(),
+  sendUsdtTransfer: jest.fn().mockResolvedValue('0x' + 'a'.repeat(64)),
 }));
 
 // ── Mock: auth middleware (JWT-based admin auth) ─────────────────────────
