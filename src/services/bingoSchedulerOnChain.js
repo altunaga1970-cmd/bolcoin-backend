@@ -48,6 +48,44 @@ function sleep(ms) {
 }
 
 /**
+ * Close any on-chain open rounds whose scheduled buy window has already expired.
+ * Handles the case where a closeRound() tx failed in a previous cycle, leaving a
+ * stale round in _openRoundIds. Without this, stale rounds accumulate until
+ * MAX_OPEN_ROUNDS is hit and all createRound() calls start failing.
+ */
+async function closeExpiredOpenRounds() {
+  let contract;
+  try {
+    contract = getBingoContractReadOnly();
+  } catch (err) {
+    console.warn('[BingoOnChainScheduler] closeExpiredOpenRounds: no contract:', err.message);
+    return;
+  }
+
+  let openIds;
+  try {
+    openIds = await contract.getOpenRounds();
+  } catch (err) {
+    console.warn('[BingoOnChainScheduler] closeExpiredOpenRounds: getOpenRounds failed:', err.message);
+    return;
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  for (const id of openIds) {
+    const roundId = Number(id);
+    try {
+      const info = await contract.getRoundInfo(roundId);
+      if (Number(info.scheduledClose) <= now) {
+        console.log(`[BingoOnChainScheduler] closeExpiredOpenRounds: closing expired round #${roundId}`);
+        await bingoService.closeRound(roundId);
+      }
+    } catch (err) {
+      console.warn(`[BingoOnChainScheduler] closeExpiredOpenRounds: round #${roundId}: ${err.message}`);
+    }
+  }
+}
+
+/**
  * Calculate drawing animation duration from winner ball positions.
  * Mirrors bingoScheduler.js calcDrawDurationMs.
  */
@@ -70,6 +108,7 @@ async function waitForVrfAndResolution(roundId) {
     throw new Error(`waitForVrfAndResolution: invalid roundId ${roundId}`);
   }
   const deadline = Date.now() + VRF_WAIT_TIMEOUT_MS;
+  let lastLogAt = Date.now();
 
   while (Date.now() < deadline) {
     if (_stopRequested) return null;
@@ -94,6 +133,13 @@ async function waitForVrfAndResolution(roundId) {
 
     // cancelled = round had no cards; contract cancelled instead of requesting VRF
     if (status === 'cancelled') return null;
+
+    // Periodic log so the room doesn't appear silent during long VRF waits
+    if (Date.now() - lastLogAt >= 60000) {
+      const elapsed = Math.round((Date.now() - (deadline - VRF_WAIT_TIMEOUT_MS)) / 1000);
+      console.log(`[BingoOnChainScheduler] Round #${roundId} still waiting for VRF/resolution (${elapsed}s elapsed, status=${status})...`);
+      lastLogAt = Date.now();
+    }
 
     await sleep(VRF_POLL_INTERVAL_MS);
   }
@@ -244,9 +290,22 @@ async function roomLoop(roomNumber) {
       await sleep(waitMs);
       if (_stopRequested) break;
 
-      // 3. Close and request VRF
+      // 3. Close and request VRF — retry up to 3× on transient failures.
+      // Critical: a failed close leaves the round in _openRoundIds on-chain.
+      // Retrying here (not by creating a new round) avoids stale-round accumulation.
       _roomStates[roomNumber] = { ..._roomStates[roomNumber], phase: 'closing' };
-      const { txHash: closeTx } = await bingoService.closeRound(roundId);
+      let closeTx;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const result = await bingoService.closeRound(roundId);
+          closeTx = result.txHash;
+          break;
+        } catch (err) {
+          if (attempt === 3) throw err;
+          console.warn(`[BingoOnChainScheduler] Room ${roomNumber} closeRound(${roundId}) attempt ${attempt} failed: ${err.message} — retrying in 5s`);
+          await sleep(5000);
+        }
+      }
       console.log(`[BingoOnChainScheduler] Room ${roomNumber} Round #${roundId} closed + VRF requested (tx: ${closeTx})`);
 
       // 4. Wait for VRF fulfillment + auto-resolution (handled by bingoEventService)
@@ -284,9 +343,26 @@ async function roomLoop(roomNumber) {
 
     } catch (err) {
       console.error(`[BingoOnChainScheduler] Room ${roomNumber} error:`, err.message);
-      const retryEnd = new Date(Date.now() + 10000).toISOString();
-      _roomStates[roomNumber] = { phase: 'error', roundId: null, phaseEndTime: retryEnd };
-      await sleep(10000);
+
+      // MaxOpenRoundsReached: all 4 contract slots are full.
+      // This happens when a previous closeRound() tx failed silently, leaving a stale
+      // open round in _openRoundIds on-chain (the DB ghost-cleanup cancels them in DB
+      // but doesn't close them on-chain). Close any expired open rounds then wait.
+      const errData = (err.data || '').toString();
+      const isMaxOpenRounds = err.message.includes('MaxOpenRoundsReached')
+        || errData === '0x25470bc4'
+        || errData.includes('25470bc4');
+
+      if (isMaxOpenRounds) {
+        console.log(`[BingoOnChainScheduler] Room ${roomNumber} MaxOpenRoundsReached — closing expired rounds then waiting 60s`);
+        _roomStates[roomNumber] = { phase: 'waiting', roundId: null, phaseEndTime: new Date(Date.now() + 60000).toISOString() };
+        try { await closeExpiredOpenRounds(); } catch (_) {}
+        await sleep(60000);
+      } else {
+        const retryEnd = new Date(Date.now() + 10000).toISOString();
+        _roomStates[roomNumber] = { phase: 'error', roundId: null, phaseEndTime: retryEnd };
+        await sleep(10000);
+      }
     }
   }
 

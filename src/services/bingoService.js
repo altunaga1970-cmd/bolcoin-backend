@@ -744,7 +744,7 @@ async function getUserActiveRooms(walletAddress) {
        AND (
          (br.status = 'open' AND br.scheduled_close > NOW())
          OR
-         (br.status = 'closed')
+         (br.status IN ('closed', 'vrf_requested', 'vrf_fulfilled', 'resolving'))
          OR
          (br.status = 'drawing')
          OR
