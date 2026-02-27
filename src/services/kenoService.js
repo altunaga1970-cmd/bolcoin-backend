@@ -25,6 +25,7 @@ const crypto = require('crypto');
 const kenoSessionService = require('./kenoSessionService');
 const gameConfigService = require('./gameConfigService');
 const kenoVrfService = require('./kenoVrfService');
+const { toCents, fromCents } = require('../utils/money');
 
 // Configuracion estatica de Keno (valores dinamicos vienen de gameConfigService)
 const KENO_CONFIG = {
@@ -76,7 +77,7 @@ async function checkLossLimits(client, wallet, session) {
          AND timestamp >= CURRENT_DATE`,
       [wallet]
     );
-    const dailyLoss = parseFloat(dailyResult.rows[0].daily_loss) || 0;
+    const dailyLoss = fromCents(toCents(dailyResult.rows[0].daily_loss || 0));
     if (dailyLoss >= limits.dailyLossLimit) {
       throw new Error(`Limite de perdida diaria alcanzado ($${dailyLoss.toFixed(2)} / $${limits.dailyLossLimit}). Intenta manana.`);
     }
@@ -84,7 +85,7 @@ async function checkLossLimits(client, wallet, session) {
 
   // Session loss limit (0 = disabled)
   if (limits.sessionLossLimit > 0 && session) {
-    const sessionLoss = parseFloat(session.total_wagered || 0) - parseFloat(session.total_won || 0);
+    const sessionLoss = fromCents(toCents(session.total_wagered || 0) - toCents(session.total_won || 0));
     if (sessionLoss >= limits.sessionLossLimit) {
       throw new Error(`Limite de perdida de sesion alcanzado ($${sessionLoss.toFixed(2)} / $${limits.sessionLossLimit}). Cierra sesion para continuar.`);
     }
@@ -257,11 +258,11 @@ async function playKeno(walletAddress, selectedNumbers, betAmount, commitId = nu
       'SELECT balance FROM users WHERE wallet_address = $1 FOR UPDATE',
       [wallet]
     );
-    const userBalance = balanceResult.rows.length > 0 ? parseFloat(balanceResult.rows[0].balance) : 0;
+    const userBalanceCents = balanceResult.rows.length > 0 ? toCents(balanceResult.rows[0].balance) : 0;
 
-    // Calculate effective balance = user DB balance + session net result
-    const sessionNet = parseFloat(session.total_won || 0) - parseFloat(session.total_wagered || 0);
-    const effectiveBalance = userBalance + sessionNet;
+    // Calculate effective balance = user DB balance + session net result (integer cents)
+    const sessionNetCents = toCents(session.total_won || 0) - toCents(session.total_wagered || 0);
+    const effectiveBalance = fromCents(userBalanceCents + sessionNetCents);
 
     if (bet > effectiveBalance) {
       throw new Error(`Balance insuficiente. Tienes: $${effectiveBalance.toFixed(2)} USDT`);

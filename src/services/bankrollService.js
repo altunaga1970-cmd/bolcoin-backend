@@ -1,5 +1,6 @@
 const { getClient, query } = require('../config/database');
 const { BOLITA_PRIZES, GAME_RULES } = require('../config/constants');
+const { toCents, fromCents } = require('../utils/money');
 
 // =================================
 // SERVICIO DE BANKROLL Y EXPOSICIÓN
@@ -36,7 +37,7 @@ async function getBankrollStatus() {
  */
 async function getCurrentLimitPerNumber() {
     const status = await getBankrollStatus();
-    return parseFloat(status.current_limit_per_number);
+    return fromCents(toCents(status.current_limit_per_number));
 }
 
 /**

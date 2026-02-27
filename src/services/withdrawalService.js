@@ -2,6 +2,7 @@ const pool = require('../db');
 const Withdrawal = require('../models/Withdrawal');
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
+const { toCents, fromCents } = require('../utils/money');
 const WITHDRAWAL_AUTO_LIMIT = parseFloat(process.env.WITHDRAWAL_AUTO_LIMIT) || 500;
 const WITHDRAWAL_MIN_AMOUNT = parseFloat(process.env.WITHDRAWAL_MIN_AMOUNT) || 5;
 
@@ -20,7 +21,7 @@ async function requestWithdrawal(userId, amount, cryptoCurrency, walletAddress) 
     throw new Error('Usuario no encontrado');
   }
 
-  if (parseFloat(user.balance) < amount) {
+  if (toCents(user.balance) < toCents(amount)) {
     throw new Error('Balance insuficiente para este retiro');
   }
 
@@ -84,11 +85,11 @@ async function processWithdrawal(withdrawalId, adminId = null) {
     );
     const user = userResult.rows[0];
 
-    if (parseFloat(user.balance) < parseFloat(withdrawal.amount)) {
+    if (toCents(user.balance) < toCents(withdrawal.amount)) {
       throw new Error('Balance insuficiente');
     }
 
-    const newBalance = parseFloat(user.balance) - parseFloat(withdrawal.amount);
+    const newBalance = fromCents(toCents(user.balance) - toCents(withdrawal.amount));
 
     // Actualizar balance
     await client.query(

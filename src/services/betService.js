@@ -14,6 +14,7 @@ const {
     formatBetNumber: formatBetNum
 } = require('../config/constants');
 const bankrollService = require('./bankrollService');
+const { toCents, fromCents } = require('../utils/money');
 
 // Configuración de ethers para contratos
 const ethers = require('ethers');
@@ -160,7 +161,7 @@ async function placeBets(userId, drawId, bets) {
         }
 
         const user = userResult.rows[0];
-        const currentBalance = parseFloat(user.balance);
+        const currentBalanceCents = toCents(user.balance);
 
         // 2. Obtener y validar sorteo
         const drawResult = await client.query(
@@ -185,7 +186,7 @@ async function placeBets(userId, drawId, bets) {
 
             const gameType = bet.game_type;
             const number = formatBetNumber(gameType, bet.number);
-            const amount = parseFloat(bet.amount);
+            const amount = fromCents(toCents(bet.amount));
 
             // Verificar disponibilidad del número (nuevo sistema)
             if (gameType !== 'corrido') {
@@ -200,13 +201,15 @@ async function placeBets(userId, drawId, bets) {
         }
 
         const totalCost = calculateTotalCost(bets);
+        const totalCostCents = toCents(totalCost);
 
-        if (currentBalance < totalCost) {
+        if (currentBalanceCents < totalCostCents) {
+            const currentBalance = fromCents(currentBalanceCents);
             throw new Error(`Balance insuficiente. Tienes ${currentBalance} USDT, necesitas ${totalCost} USDT`);
         }
 
         // 4. Debitar balance (with optimistic locking check)
-        const newBalance = currentBalance - totalCost;
+        const newBalance = fromCents(currentBalanceCents - totalCostCents);
 
         const updateResult = await client.query(
             'UPDATE users SET balance = $1, version = version + 1 WHERE id = $2 AND version = $3',
@@ -225,7 +228,7 @@ async function placeBets(userId, drawId, bets) {
             const gameType = bet.game_type;
             const number = bet.formattedNumber;
             const rules = GAME_RULES[gameType];
-            const potentialPayout = amount * rules.multiplier;
+            const potentialPayout = fromCents(toCents(amount) * rules.multiplier);
 
             const betResult = await client.query(
                 `INSERT INTO bets (
@@ -377,7 +380,7 @@ async function getUserBetStats(userId) {
             total_winnings: parseFloat(stats.total_winnings) || 0,
             avg_bet_amount: parseFloat(stats.avg_bet_amount) || 0,
             last_bet_date: stats.last_bet_date,
-            net_profit: (parseFloat(stats.total_winnings) || 0) - (parseFloat(stats.total_amount) || 0)
+            net_profit: fromCents(toCents(stats.total_winnings || 0) - toCents(stats.total_amount || 0))
         };
 
     } finally {
