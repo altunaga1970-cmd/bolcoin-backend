@@ -92,6 +92,9 @@ async function waitForVrfAndResolution(roundId) {
       };
     }
 
+    // cancelled = round had no cards; contract cancelled instead of requesting VRF
+    if (status === 'cancelled') return null;
+
     await sleep(VRF_POLL_INTERVAL_MS);
   }
 
@@ -164,17 +167,21 @@ async function recoverOpenRounds() {
       continue; // If already closed by another path, proceed to next
     }
 
-    const resolution = await waitForVrfAndResolution(roundId);
-    if (resolution) {
-      const drawMs = calcDrawDurationMs(resolution.lineWinnerBall, resolution.bingoWinnerBall);
-      await sleep(drawMs);
-      await pool.query(
-        `UPDATE bingo_rounds SET status = 'resolved', updated_at = NOW() WHERE round_id = $1 AND status = 'drawing'`,
-        [roundId]
-      );
-      console.log(`[BingoOnChainScheduler] Recovery: Round #${roundId} resolved`);
-    } else {
-      console.warn(`[BingoOnChainScheduler] Recovery: Round #${roundId} VRF timed out — skipping`);
+    try {
+      const resolution = await waitForVrfAndResolution(roundId);
+      if (resolution) {
+        const drawMs = calcDrawDurationMs(resolution.lineWinnerBall, resolution.bingoWinnerBall);
+        await sleep(drawMs);
+        await pool.query(
+          `UPDATE bingo_rounds SET status = 'resolved', updated_at = NOW() WHERE round_id = $1 AND status = 'drawing'`,
+          [roundId]
+        );
+        console.log(`[BingoOnChainScheduler] Recovery: Round #${roundId} resolved`);
+      } else {
+        console.log(`[BingoOnChainScheduler] Recovery: Round #${roundId} cancelled or timed out — skipping`);
+      }
+    } catch (err) {
+      console.error(`[BingoOnChainScheduler] Recovery: waitForVrf(${roundId}) error:`, err.message);
     }
   }
 
