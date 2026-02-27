@@ -322,6 +322,42 @@ async function start() {
   _stopRequested = false;
   console.log(`[BingoOnChainScheduler] Starting ${NUM_ROOMS}-room on-chain scheduler (contract: ${process.env.BINGO_CONTRACT_ADDRESS})`);
 
+  // Cancel any stale DB rounds that have no corresponding on-chain round.
+  // This happens when the off-chain scheduler ran before the on-chain migration:
+  // the DB has high-ID rounds (e.g. 11437) that the contract never created.
+  // The lobby would show these ghost rounds, causing RoundNotFound on buyCards.
+  try {
+    let contract;
+    try { contract = getBingoContractReadOnly(); } catch (_) { contract = null; }
+
+    if (contract) {
+      const onChainIds = await contract.getOpenRounds();
+      const onChainSet = new Set(onChainIds.map(id => Number(id)));
+
+      // Build the list of on-chain IDs we know about to exclude from cancellation.
+      // Any DB round that is 'open' but not in the contract's open list is a ghost.
+      const { rows: dbOpenRows } = await pool.query(
+        `SELECT round_id FROM bingo_rounds WHERE status = 'open'`
+      );
+      const ghostIds = dbOpenRows
+        .map(r => r.round_id)
+        .filter(id => !onChainSet.has(id));
+
+      if (ghostIds.length > 0) {
+        await pool.query(
+          `UPDATE bingo_rounds SET status = 'cancelled', updated_at = NOW()
+           WHERE round_id = ANY($1)`,
+          [ghostIds]
+        );
+        console.log(`[BingoOnChainScheduler] Startup: cancelled ${ghostIds.length} ghost DB round(s): [${ghostIds.join(', ')}]`);
+      } else {
+        console.log('[BingoOnChainScheduler] Startup: no ghost rounds in DB');
+      }
+    }
+  } catch (err) {
+    console.warn('[BingoOnChainScheduler] Startup ghost-round cleanup failed (non-fatal):', err.message);
+  }
+
   // Close any open rounds left over from a previous session before creating new ones.
   // This prevents MaxOpenRoundsReached() on restart.
   await recoverOpenRounds();
