@@ -152,4 +152,36 @@ dApp de loteria y juegos de azar en Polygon PoS con USDT. Cuatro juegos: Keno (l
 5. Monitoring + alertas (Discord/Telegram webhook)
 6. Ver plan completo en AUDIT_PROFESSIONAL_2026-02-25.md
 
-## Ultima sesion: 2026-02-25
+## Sesion 2026-02-27
+
+### Amoy testnet deployment (COMPLETADO — scripts sin commitear hasta ahora)
+
+- Contratos desplegados en Amoy con CEI fix aplicado:
+  - KenoGame:     `0xAa1d6945e691807CBCC239F6C89C6469E0eD4998`
+  - BingoGame:    `0x4B1f1e94a9651E84D8584760980f74C56Ee61652`
+  - LaBolitaGame: `0x6B07df51947f3e476B7574C14fF3293a8a4c846A`
+- VRF Subscription ID: `7970515401521569318593654502782683303673295181035791822529802935575344475841`
+- USDT mock Amoy: `0x78B85ACB36263D7A77671941E2B20940afAef359`
+
+### Scripts Amoy disponibles (`contracts/scripts/`)
+- `status-amoy.js` — snapshot completo de los 3 contratos + VRF sub
+- `add-keno-consumer-amoy.js` — registrar KenoGame como consumer VRF
+- `check-keno-vrf.js` — diagnostico VRF config en KenoGame
+- `fund-vrf-keno.js` — fondear VRF sub con LINK + registrar consumer
+- `recover-keno-payout-amoy.js` — escribir/commitear payout table Keno
+- `retire-keno-polygon.js` — retirar KenoGame de mainnet (cuando aplique)
+
+### hardhat.config.js
+- Fallback RPC publico para amoy: `https://rpc-amoy.polygon.technology`
+- Fallback RPC publico para polygon: `https://polygon-bor-rpc.publicnode.com`
+
+### Documentacion creada
+- `AMOY_SETUP_STATUS.md` — estado de contratos Amoy, blockers VRF, pasos E2E test
+
+### Bloqueos Amoy (requieren accion manual con wallet owner)
+1. VRF consumers NO registrados → ejecutar `add-keno-consumer-amoy.js` o via dashboard
+2. VRF subscription sin LINK → fondear en https://vrf.chain.link
+3. Pools vacios → llamar `fundPool()` en cada contrato
+4. Payout table Keno version=0 → ejecutar `recover-keno-payout-amoy.js`
+
+## Ultima sesion: 2026-02-27

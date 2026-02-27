@@ -24,11 +24,11 @@ module.exports = {
       url: "http://127.0.0.1:8545",
     },
     amoy: {
-      url: process.env.AMOY_RPC_URL || "",
+      url: process.env.AMOY_RPC_URL || "https://rpc-amoy.polygon.technology",
       accounts: process.env.DEPLOYER_KEY ? [process.env.DEPLOYER_KEY] : [],
     },
     polygon: {
-      url: process.env.POLYGON_RPC_URL || "",
+      url: process.env.POLYGON_RPC_URL || "https://polygon-bor-rpc.publicnode.com",
       accounts: process.env.DEPLOYER_KEY ? [process.env.DEPLOYER_KEY] : [],
     },
   },
