@@ -291,12 +291,6 @@ jest.mock('../../../controllers/paymentController', () => ({
   creditDeposit: jest.fn(),
 }));
 
-jest.mock('../../../controllers/webhookController', () => ({
-  handleNowPaymentsIPN: mockJsonHandler(),
-  handlePayoutWebhook: mockJsonHandler(),
-  simulateWebhook: mockJsonHandler(),
-}));
-
 // ── Mock: models ─────────────────────────────────────────────────────────
 jest.mock('../../../models/Bet', () => ({}));
 jest.mock('../../../models/User', () => ({}));
@@ -311,7 +305,6 @@ jest.mock('../../../services/payoutService', () => ({}));
 jest.mock('../../../services/withdrawalService', () => ({}));
 jest.mock('../../../services/betService', () => ({ placeBets: jest.fn(), validateBet: jest.fn() }));
 jest.mock('../../../services/lotteryService', () => ({}));
-jest.mock('../../../services/nowPaymentsService', () => ({}));
 jest.mock('../../../indexer/winnerCalculator', () => ({}));
 jest.mock('../../../services/auditService', () => ({
   log: jest.fn(), getAuditLogs: jest.fn().mockResolvedValue([]),

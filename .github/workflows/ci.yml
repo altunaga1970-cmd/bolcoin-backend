@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  # ── Backend tests (Jest, fully mocked — no real DB needed) ──────────────
+  backend-tests:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm run test:ci
+        env:
+          NODE_ENV: test
+          OPERATOR_WALLET: '0x1111111111111111111111111111111111111111'
+          SESSION_SECRET: 'ci-test-secret-not-production'
+          JWT_SECRET: 'ci-jwt-secret-not-production'
+
+  # ── Smart contract tests (Hardhat, local EVM) ───────────────────────────
+  contract-tests:
+    name: Contract Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: contracts/package-lock.json
+
+      - name: Install contract dependencies
+        run: npm ci
+        working-directory: contracts
+
+      - name: Compile contracts
+        run: npx hardhat compile
+        working-directory: contracts
+
+      - name: Run contract tests
+        run: npx hardhat test
+        working-directory: contracts
+
+  # ── Frontend build check (Vite) ─────────────────────────────────────────
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: bolcoin-frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: bolcoin-frontend
+
+      - name: Build
+        run: npm run build
+        working-directory: bolcoin-frontend
+        env:
+          VITE_API_URL: 'https://bolcoin-backend-production.up.railway.app/api'
+          VITE_CHAIN_ID: '137'
