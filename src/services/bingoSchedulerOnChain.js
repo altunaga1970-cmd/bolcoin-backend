@@ -210,6 +210,9 @@ async function recoverOpenRounds() {
       console.log(`[BingoOnChainScheduler] Recovery: Round #${roundId} closed, awaiting VRF`);
     } catch (err) {
       console.error(`[BingoOnChainScheduler] Recovery: closeRound(${roundId}) failed:`, err.message);
+      // A NONCE_EXPIRED tx may still be pending in the mempool — wait before the next
+      // closeRound() so the nonce manager re-reads a settled value and doesn't collide.
+      await sleep(3000);
       continue; // If already closed by another path, proceed to next
     }
 
@@ -349,7 +352,8 @@ async function roomLoop(roomNumber) {
       // open round in _openRoundIds on-chain (the DB ghost-cleanup cancels them in DB
       // but doesn't close them on-chain). Close any expired open rounds then wait.
       const errData = (err.data || '').toString();
-      const isMaxOpenRounds = err.message.includes('MaxOpenRoundsReached')
+      const isMaxOpenRounds = err.message?.includes('MaxOpenRoundsReached')
+        || err.message?.includes('25470bc4')
         || errData === '0x25470bc4'
         || errData.includes('25470bc4');
 

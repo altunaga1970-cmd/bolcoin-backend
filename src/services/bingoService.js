@@ -205,6 +205,9 @@ async function createRound(scheduledCloseTimestamp) {
     if (isNonceError(err)) {
       console.warn('[Bingo] createRound: nonce error, resetting NonceManager and retrying once');
       resetNonceManager();
+      // Allow pending pool to settle: re-reading the nonce immediately after reset may
+      // still return the stale pending value if the prior tx hasn't propagated yet.
+      await new Promise(r => setTimeout(r, 3000));
       tx = await contract.createRound(scheduledCloseTimestamp, AMOY_GAS_OVERRIDES);
     } else {
       throw err;
@@ -242,6 +245,8 @@ async function closeRound(roundId) {
     if (isNonceError(err)) {
       console.warn(`[Bingo] closeRound(${roundId}): nonce error, resetting NonceManager and retrying once`);
       resetNonceManager();
+      // Allow pending pool to settle before retry (same reason as createRound above).
+      await new Promise(r => setTimeout(r, 3000));
       tx = await contract.closeAndRequestVRF(roundId, AMOY_GAS_OVERRIDES);
     } else {
       throw err;
