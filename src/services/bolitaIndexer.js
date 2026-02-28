@@ -1,8 +1,11 @@
 /**
  * La Bolita Event Indexer
  *
- * Listens to LaBolitaGame.sol contract events and indexes them in PostgreSQL
+ * Polls LaBolitaGame.sol contract events via getLogs and indexes them in PostgreSQL
  * for fast API queries and admin dashboard.
+ *
+ * Uses getLogs polling (not contract.on / eth_newFilter) — Polygon Amoy RPC
+ * does not support eth_getFilterChanges.
  *
  * Events indexed:
  *   - BetPlaced → bets table
@@ -37,7 +40,9 @@ class BolitaIndexer {
     this.contract = null;
     this.provider = null;
     this.isRunning = false;
-    this.listeners = [];
+    this.pollTimer = null;
+    this.lastBlockProcessed = 0;
+    this.pollingInterval = 12000; // 12s
   }
 
   /**
@@ -64,7 +69,7 @@ class BolitaIndexer {
   }
 
   /**
-   * Start listening to events
+   * Start polling for events
    */
   async start() {
     if (!this.contract) {
@@ -75,101 +80,82 @@ class BolitaIndexer {
     if (this.isRunning) return;
     this.isRunning = true;
 
-    console.log('[BolitaIndexer] Starting event listeners...');
+    console.log('[BolitaIndexer] Starting event polling (getLogs)...');
 
-    // DrawCreated
-    this.contract.on('DrawCreated', async (drawId, drawNumber, scheduledTime) => {
-      try {
-        await this._indexDrawCreated(drawId, drawNumber, scheduledTime);
-      } catch (err) {
-        console.error('[BolitaIndexer] Error indexing DrawCreated:', err.message);
-      }
-    });
+    // Seed lastBlockProcessed from current chain tip — only index new events from here
+    try {
+      this.lastBlockProcessed = await this.provider.getBlockNumber();
+    } catch (_) {
+      this.lastBlockProcessed = 0;
+    }
 
-    // DrawOpened
-    this.contract.on('DrawOpened', async (drawId) => {
-      try {
-        await this._updateDrawStatus(drawId, 'open');
-      } catch (err) {
-        console.error('[BolitaIndexer] Error indexing DrawOpened:', err.message);
-      }
-    });
+    this._schedulePoll();
 
-    // DrawClosed
-    this.contract.on('DrawClosed', async (drawId) => {
-      try {
-        await this._updateDrawStatus(drawId, 'closed');
-      } catch (err) {
-        console.error('[BolitaIndexer] Error indexing DrawClosed:', err.message);
-      }
-    });
-
-    // WinningNumberSet
-    this.contract.on('WinningNumberSet', async (drawId, winningNumber) => {
-      try {
-        await this._indexWinningNumber(drawId, winningNumber);
-      } catch (err) {
-        console.error('[BolitaIndexer] Error indexing WinningNumberSet:', err.message);
-      }
-    });
-
-    // DrawResolved
-    this.contract.on('DrawResolved', async (drawId, winningNumber, totalPaidOut) => {
-      try {
-        await this._indexDrawResolved(drawId, winningNumber, totalPaidOut);
-      } catch (err) {
-        console.error('[BolitaIndexer] Error indexing DrawResolved:', err.message);
-      }
-    });
-
-    // DrawCancelled
-    this.contract.on('DrawCancelled', async (drawId, refundedAmount) => {
-      try {
-        await this._indexDrawCancelled(drawId, refundedAmount);
-      } catch (err) {
-        console.error('[BolitaIndexer] Error indexing DrawCancelled:', err.message);
-      }
-    });
-
-    // BetPlaced
-    this.contract.on('BetPlaced', async (drawId, betIndex, user, betType, betNumber, amount) => {
-      try {
-        await this._indexBetPlaced(drawId, betIndex, user, betType, betNumber, amount);
-      } catch (err) {
-        console.error('[BolitaIndexer] Error indexing BetPlaced:', err.message);
-      }
-    });
-
-    // BetPaid
-    this.contract.on('BetPaid', async (drawId, betIndex, user, payout) => {
-      try {
-        await this._indexBetPaid(drawId, betIndex, user, payout);
-      } catch (err) {
-        console.error('[BolitaIndexer] Error indexing BetPaid:', err.message);
-      }
-    });
-
-    // BetRefunded
-    this.contract.on('BetRefunded', async (drawId, betIndex, user, amount) => {
-      try {
-        await this._indexBetRefunded(drawId, betIndex, user, amount);
-      } catch (err) {
-        console.error('[BolitaIndexer] Error indexing BetRefunded:', err.message);
-      }
-    });
-
-    console.log('[BolitaIndexer] Event listeners active');
+    console.log('[BolitaIndexer] Event polling active');
   }
 
   /**
-   * Stop listening
+   * Stop polling
    */
   stop() {
-    if (this.contract) {
-      this.contract.removeAllListeners();
-    }
     this.isRunning = false;
+    if (this.pollTimer) { clearTimeout(this.pollTimer); this.pollTimer = null; }
     console.log('[BolitaIndexer] Stopped');
+  }
+
+  _schedulePoll() {
+    if (!this.isRunning) return;
+    this.pollTimer = setTimeout(() => this._poll(), this.pollingInterval);
+  }
+
+  async _poll() {
+    if (!this.isRunning) return;
+    try {
+      const currentBlock = await this.provider.getBlockNumber();
+      if (currentBlock > this.lastBlockProcessed) {
+        const logs = await this.provider.getLogs({
+          address: process.env.BOLITA_CONTRACT_ADDRESS,
+          fromBlock: this.lastBlockProcessed + 1,
+          toBlock: currentBlock,
+        });
+        for (const log of logs) {
+          try {
+            const parsed = this.contract.interface.parseLog(log);
+            if (parsed) await this._dispatch(parsed);
+          } catch (_) { /* skip non-matching logs */ }
+        }
+        this.lastBlockProcessed = currentBlock;
+      }
+    } catch (err) {
+      console.error('[BolitaIndexer] Poll error:', err.message);
+    }
+    this._schedulePoll();
+  }
+
+  async _dispatch(parsed) {
+    const { name, args } = parsed;
+    try {
+      if (name === 'DrawCreated')
+        await this._indexDrawCreated(args[0], args[1], args[2]);
+      else if (name === 'DrawOpened')
+        await this._updateDrawStatus(args[0], 'open');
+      else if (name === 'DrawClosed')
+        await this._updateDrawStatus(args[0], 'closed');
+      else if (name === 'WinningNumberSet')
+        await this._indexWinningNumber(args[0], args[1]);
+      else if (name === 'DrawResolved')
+        await this._indexDrawResolved(args[0], args[1], args[2]);
+      else if (name === 'DrawCancelled')
+        await this._indexDrawCancelled(args[0], args[1]);
+      else if (name === 'BetPlaced')
+        await this._indexBetPlaced(args[0], args[1], args[2], args[3], args[4], args[5]);
+      else if (name === 'BetPaid')
+        await this._indexBetPaid(args[0], args[1], args[2], args[3]);
+      else if (name === 'BetRefunded')
+        await this._indexBetRefunded(args[0], args[1], args[2], args[3]);
+    } catch (err) {
+      console.error(`[BolitaIndexer] Error dispatching ${name}:`, err.message);
+    }
   }
 
   // ── Internal indexing methods ──
