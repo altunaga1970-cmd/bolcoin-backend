@@ -19,16 +19,13 @@ const { ethers } = require('ethers');
 const { getClient, query } = require('../config/database');
 
 const ABI = [
-  'event DrawCreated(uint256 indexed drawId, string drawNumber, uint64 scheduledTime)',
+  'event DrawCreated(uint256 indexed drawId, string drawNumber, uint256 scheduledTime)',
   'event DrawOpened(uint256 indexed drawId)',
-  'event DrawClosed(uint256 indexed drawId)',
+  'event DrawClosed(uint256 indexed drawId, uint256 vrfRequestId)',
   'event DrawResolved(uint256 indexed drawId, uint16 winningNumber, uint256 totalPaidOut)',
   'event DrawCancelled(uint256 indexed drawId, uint256 refundedAmount)',
-  'event BetPlaced(uint256 indexed drawId, uint256 betIndex, address indexed user, uint8 betType, uint16 betNumber, uint256 amount)',
-  'event BetPaid(uint256 indexed drawId, uint256 betIndex, address indexed user, uint256 payout)',
-  'event BetUnpaid(uint256 indexed drawId, uint256 betIndex, uint256 payoutNeeded, uint256 poolAvailable)',
-  'event BetRefunded(uint256 indexed drawId, uint256 betIndex, address indexed user, uint256 amount)',
-  'event WinningNumberSet(uint256 indexed drawId, uint16 winningNumber)'
+  'event BetPlaced(uint256 indexed betId, uint256 indexed drawId, address indexed player, uint8 betType, uint16 number, uint256 amount)',
+  'event BetResolved(uint256 indexed betId, address indexed player, bool won, uint256 payout)',
 ];
 
 const TOKEN_DECIMALS = 6;
@@ -141,18 +138,14 @@ class BolitaIndexer {
         await this._updateDrawStatus(args[0], 'open');
       else if (name === 'DrawClosed')
         await this._updateDrawStatus(args[0], 'closed');
-      else if (name === 'WinningNumberSet')
-        await this._indexWinningNumber(args[0], args[1]);
       else if (name === 'DrawResolved')
         await this._indexDrawResolved(args[0], args[1], args[2]);
       else if (name === 'DrawCancelled')
         await this._indexDrawCancelled(args[0], args[1]);
       else if (name === 'BetPlaced')
         await this._indexBetPlaced(args[0], args[1], args[2], args[3], args[4], args[5]);
-      else if (name === 'BetPaid')
-        await this._indexBetPaid(args[0], args[1], args[2], args[3]);
-      else if (name === 'BetRefunded')
-        await this._indexBetRefunded(args[0], args[1], args[2], args[3]);
+      else if (name === 'BetResolved')
+        await this._indexBetResolved(args[0], args[1], args[2], args[3]);
     } catch (err) {
       console.error(`[BolitaIndexer] Error dispatching ${name}:`, err.message);
     }
@@ -184,25 +177,6 @@ class BolitaIndexer {
     `, [status, id]);
 
     console.log(`[BolitaIndexer] Draw #${id} status -> ${status}`);
-  }
-
-  async _indexWinningNumber(drawId, winningNumber) {
-    const id = Number(drawId);
-    const win = Number(winningNumber);
-    const fijo = String(win % 100).padStart(2, '0');
-    const centena = String(win % 1000).padStart(3, '0');
-    const parle = String(win).padStart(4, '0');
-
-    await query(`
-      UPDATE draws SET
-        winning_fijos = $1,
-        winning_centenas = $2,
-        winning_parles = $3,
-        updated_at = NOW()
-      WHERE id = $4
-    `, [fijo, centena, parle, id]);
-
-    console.log(`[BolitaIndexer] Draw #${id} winning number: ${parle} (fijo=${fijo}, centena=${centena})`);
   }
 
   async _indexDrawResolved(drawId, winningNumber, totalPaidOut) {
@@ -239,16 +213,16 @@ class BolitaIndexer {
     console.log(`[BolitaIndexer] DrawCancelled #${id}: refunded ${refunded} USDT`);
   }
 
-  async _indexBetPlaced(drawId, betIndex, user, betType, betNumber, amount) {
+  async _indexBetPlaced(betId, drawId, player, betType, number, amount) {
+    const betIdNum = Number(betId);
     const drawIdNum = Number(drawId);
-    const betIndexNum = Number(betIndex);
     const gameType = BET_TYPES[Number(betType)] || 'fijos';
-    const number = String(Number(betNumber)).padStart(
+    const numStr = String(Number(number)).padStart(
       gameType === 'fijos' ? 2 : gameType === 'centenas' ? 3 : 4,
       '0'
     );
     const amountUsdt = parseFloat(ethers.formatUnits(amount, TOKEN_DECIMALS));
-    const userAddr = user.toLowerCase();
+    const userAddr = player.toLowerCase();
 
     // Look up user ID
     const userResult = await query(
@@ -273,37 +247,25 @@ class BolitaIndexer {
         potential_payout, multiplier, status, chain_bet_index, created_at
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, NOW())
       ON CONFLICT DO NOTHING
-    `, [userId, drawIdNum, gameType, number, amountUsdt, potentialPayout, multiplier, betIndexNum]);
+    `, [userId, drawIdNum, gameType, numStr, amountUsdt, potentialPayout, multiplier, betIdNum]);
 
-    console.log(`[BolitaIndexer] BetPlaced: draw=${drawIdNum} idx=${betIndexNum} user=${userAddr} ${gameType}:${number} ${amountUsdt} USDT`);
+    console.log(`[BolitaIndexer] BetPlaced: betId=${betIdNum} draw=${drawIdNum} user=${userAddr} ${gameType}:${numStr} ${amountUsdt} USDT`);
   }
 
-  async _indexBetPaid(drawId, betIndex, user, payout) {
-    const drawIdNum = Number(drawId);
-    const betIndexNum = Number(betIndex);
+  async _indexBetResolved(betId, player, won, payout) {
+    const betIdNum = Number(betId);
     const payoutUsdt = parseFloat(ethers.formatUnits(payout, TOKEN_DECIMALS));
+    const status = won ? 'won' : 'lost';
 
     await query(`
       UPDATE bets SET
-        status = 'won',
-        payout_amount = $1,
+        status = $1,
+        payout_amount = $2,
         updated_at = NOW()
-      WHERE draw_id = $2 AND chain_bet_index = $3
-    `, [payoutUsdt, drawIdNum, betIndexNum]);
+      WHERE chain_bet_index = $3
+    `, [status, payoutUsdt, betIdNum]);
 
-    console.log(`[BolitaIndexer] BetPaid: draw=${drawIdNum} idx=${betIndexNum} payout=${payoutUsdt} USDT`);
-  }
-
-  async _indexBetRefunded(drawId, betIndex, user, amount) {
-    const drawIdNum = Number(drawId);
-    const betIndexNum = Number(betIndex);
-
-    await query(`
-      UPDATE bets SET status = 'refunded', updated_at = NOW()
-      WHERE draw_id = $1 AND chain_bet_index = $2
-    `, [drawIdNum, betIndexNum]);
-
-    console.log(`[BolitaIndexer] BetRefunded: draw=${drawIdNum} idx=${betIndexNum}`);
+    console.log(`[BolitaIndexer] BetResolved: betId=${betIdNum} won=${won} payout=${payoutUsdt} USDT`);
   }
 
   /**
@@ -319,8 +281,8 @@ class BolitaIndexer {
 
     const events = [
       'DrawCreated', 'DrawOpened', 'DrawClosed',
-      'WinningNumberSet', 'DrawResolved', 'DrawCancelled',
-      'BetPlaced', 'BetPaid', 'BetRefunded'
+      'DrawResolved', 'DrawCancelled',
+      'BetPlaced', 'BetResolved'
     ];
 
     for (const eventName of events) {
@@ -345,9 +307,6 @@ class BolitaIndexer {
             case 'DrawClosed':
               await this._updateDrawStatus(parsed.args[0], 'closed');
               break;
-            case 'WinningNumberSet':
-              await this._indexWinningNumber(parsed.args[0], parsed.args[1]);
-              break;
             case 'DrawResolved':
               await this._indexDrawResolved(parsed.args[0], parsed.args[1], parsed.args[2]);
               break;
@@ -360,11 +319,8 @@ class BolitaIndexer {
                 parsed.args[3], parsed.args[4], parsed.args[5]
               );
               break;
-            case 'BetPaid':
-              await this._indexBetPaid(parsed.args[0], parsed.args[1], parsed.args[2], parsed.args[3]);
-              break;
-            case 'BetRefunded':
-              await this._indexBetRefunded(parsed.args[0], parsed.args[1], parsed.args[2], parsed.args[3]);
+            case 'BetResolved':
+              await this._indexBetResolved(parsed.args[0], parsed.args[1], parsed.args[2], parsed.args[3]);
               break;
           }
         }

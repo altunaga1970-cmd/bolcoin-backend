@@ -1,123 +1,96 @@
 [
   {
+    "inputs": [
+      {"internalType": "string", "name": "drawNumber", "type": "string"},
+      {"internalType": "uint256", "name": "scheduledTime", "type": "uint256"}
+    ],
+    "name": "createDraw",
+    "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [{"internalType": "uint256", "name": "drawId", "type": "uint256"}],
+    "name": "openDraw",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [{"internalType": "uint256", "name": "drawId", "type": "uint256"}],
+    "name": "closeDraw",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {"internalType": "uint256", "name": "drawId", "type": "uint256"},
+      {"internalType": "uint256", "name": "limit", "type": "uint256"}
+    ],
+    "name": "resolveDrawBatch",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [{"internalType": "uint256", "name": "drawId", "type": "uint256"}],
+    "name": "cancelDraw",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [{"internalType": "uint256", "name": "drawId", "type": "uint256"}],
+    "name": "cancelStaleDraw",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
     "anonymous": false,
     "inputs": [
-      {
-        "indexed": true,
-        "internalType": "uint256",
-        "name": "betId",
-        "type": "uint256"
-      },
-      {
-        "indexed": true,
-        "internalType": "address",
-        "name": "player",
-        "type": "address"
-      },
-      {
-        "indexed": true,
-        "internalType": "uint256",
-        "name": "drawId",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "enum LaBolita.BetType",
-        "name": "betType",
-        "type": "uint8"
-      },
-      {
-        "indexed": false,
-        "internalType": "string",
-        "name": "numbers",
-        "type": "string"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "amount",
-        "type": "uint256"
-      }
+      {"indexed": true, "internalType": "uint256", "name": "drawId", "type": "uint256"},
+      {"indexed": false, "internalType": "string", "name": "drawNumber", "type": "string"},
+      {"indexed": false, "internalType": "uint256", "name": "scheduledTime", "type": "uint256"}
     ],
-    "name": "BetPlaced",
+    "name": "DrawCreated",
     "type": "event"
   },
   {
+    "anonymous": false,
     "inputs": [
-      {
-        "internalType": "address",
-        "name": "_user",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256",
-        "name": "_amount",
-        "type": "uint256"
-      }
+      {"indexed": true, "internalType": "uint256", "name": "drawId", "type": "uint256"}
     ],
-    "name": "adminDeposit",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
+    "name": "DrawOpened",
+    "type": "event"
   },
   {
-    "inputs": [],
-    "name": "betCounter",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "",
-        "type": "uint256"
-      }
+    "anonymous": false,
+    "inputs": [
+      {"indexed": true, "internalType": "uint256", "name": "drawId", "type": "uint256"},
+      {"indexed": false, "internalType": "uint256", "name": "vrfRequestId", "type": "uint256"}
     ],
-    "stateMutability": "view",
-    "type": "function"
+    "name": "DrawClosed",
+    "type": "event"
   },
   {
+    "anonymous": false,
     "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "_drawId",
-        "type": "uint256"
-      },
-      {
-        "internalType": "enum LaBolita.BetType",
-        "name": "_betType",
-        "type": "uint8"
-      },
-      {
-        "internalType": "string",
-        "name": "_numbers",
-        "type": "string"
-      },
-      {
-        "internalType": "uint256",
-        "name": "_amount",
-        "type": "uint256"
-      }
+      {"indexed": true, "internalType": "uint256", "name": "drawId", "type": "uint256"},
+      {"indexed": false, "internalType": "uint16", "name": "winningNumber", "type": "uint16"},
+      {"indexed": false, "internalType": "uint256", "name": "totalPaidOut", "type": "uint256"}
     ],
-    "name": "placeBet",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
+    "name": "DrawResolved",
+    "type": "event"
   },
   {
+    "anonymous": false,
     "inputs": [
-      {
-        "internalType": "address",
-        "name": "",
-        "type": "address"
-      }
+      {"indexed": true, "internalType": "uint256", "name": "drawId", "type": "uint256"},
+      {"indexed": false, "internalType": "uint256", "name": "refundedAmount", "type": "uint256"}
     ],
-    "name": "userBalances",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
+    "name": "DrawCancelled",
+    "type": "event"
   }
 ]
