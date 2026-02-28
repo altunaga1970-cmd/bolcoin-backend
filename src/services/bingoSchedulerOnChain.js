@@ -6,11 +6,10 @@
  *
  * Each room cycle:
  *   1. createRound()        → contract.createRound(scheduledClose)
- *   2. Wait buy window (45s)
- *   3. closeAndRequestVRF() → contract.closeAndRequestVRF(roundId)
- *   4. Wait for VRF fulfillment (polled from DB, resolved by bingoEventService)
- *   5. Wait for draw animation (based on winnerBall timing)
- *   6. Cooldown 30s → next round
+ *   2. Wait buy window (2 min)
+ *   3a. IF 0 cards sold → cancelRound() (no VRF, no LINK spent) → cooldown
+ *   3b. IF cards sold  → closeAndRequestVRF() → wait VRF → draw → cooldown
+ *   4. Cooldown 30s → next round
  *
  * The bingoEventService handles:
  *   - Indexing CardsPurchased events (card numbers → DB)
@@ -293,52 +292,73 @@ async function roomLoop(roomNumber) {
       await sleep(waitMs);
       if (_stopRequested) break;
 
-      // 3. Close and request VRF — retry up to 3× on transient failures.
-      // Critical: a failed close leaves the round in _openRoundIds on-chain.
-      // Retrying here (not by creating a new round) avoids stale-round accumulation.
       _roomStates[roomNumber] = { ..._roomStates[roomNumber], phase: 'closing' };
-      let closeTx;
-      for (let attempt = 1; attempt <= 3; attempt++) {
+
+      // 3. Check if anyone bought cards — skip VRF entirely for empty rounds.
+      // Saves: closeAndRequestVRF() gas + Chainlink LINK + resolveRound() gas.
+      // cancelRound() is the only on-chain tx needed for an empty round.
+      const { rows: cardRows } = await pool.query(
+        'SELECT total_cards FROM bingo_rounds WHERE round_id = $1',
+        [roundId]
+      );
+      const totalCards = cardRows[0] ? (parseInt(cardRows[0].total_cards) || 0) : 0;
+
+      if (totalCards === 0) {
+        // Empty round — cancel on-chain, skip VRF
+        console.log(`[BingoOnChainScheduler] Room ${roomNumber} Round #${roundId} — 0 cards sold, cancelling (no VRF)`);
         try {
-          const result = await bingoService.closeRound(roundId);
-          closeTx = result.txHash;
-          break;
+          await bingoService.cancelRound(roundId);
+          console.log(`[BingoOnChainScheduler] Room ${roomNumber} Round #${roundId} cancelled (no gas wasted on VRF)`);
         } catch (err) {
-          if (attempt === 3) throw err;
-          console.warn(`[BingoOnChainScheduler] Room ${roomNumber} closeRound(${roundId}) attempt ${attempt} failed: ${err.message} — retrying in 5s`);
-          await sleep(5000);
+          console.warn(`[BingoOnChainScheduler] Room ${roomNumber} cancelRound(${roundId}) failed: ${err.message}`);
+        }
+      } else {
+        // 3b. Cards exist — close and request VRF (retry up to 3× on transient failures).
+        // Critical: a failed close leaves the round in _openRoundIds on-chain.
+        // Retrying here (not by creating a new round) avoids stale-round accumulation.
+        let closeTx;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            const result = await bingoService.closeRound(roundId);
+            closeTx = result.txHash;
+            break;
+          } catch (err) {
+            if (attempt === 3) throw err;
+            console.warn(`[BingoOnChainScheduler] Room ${roomNumber} closeRound(${roundId}) attempt ${attempt} failed: ${err.message} — retrying in 5s`);
+            await sleep(5000);
+          }
+        }
+        console.log(`[BingoOnChainScheduler] Room ${roomNumber} Round #${roundId} closed + VRF requested (tx: ${closeTx})`);
+
+        // 4. Wait for VRF fulfillment + auto-resolution (handled by bingoEventService)
+        _roomStates[roomNumber] = { ..._roomStates[roomNumber], phase: 'vrf_wait' };
+        console.log(`[BingoOnChainScheduler] Room ${roomNumber} Round #${roundId} waiting for VRF…`);
+
+        const resolution = await waitForVrfAndResolution(roundId);
+
+        if (!resolution) {
+          // Timeout or stop — move to cooldown and try next round
+          console.log(`[BingoOnChainScheduler] Room ${roomNumber} Round #${roundId} cancelled or timed out — skipping draw`);
+        } else {
+          // 5. Wait for draw animation to complete (frontend syncs to draw_started_at)
+          const drawDurationMs = calcDrawDurationMs(resolution.lineWinnerBall, resolution.bingoWinnerBall);
+          const drawEnd = new Date(Date.now() + drawDurationMs).toISOString();
+          _roomStates[roomNumber] = { ..._roomStates[roomNumber], phase: 'drawing', phaseEndTime: drawEnd };
+          console.log(`[BingoOnChainScheduler] Room ${roomNumber} Round #${roundId} drawing ${Math.ceil(drawDurationMs / 1000)}s`);
+
+          await sleep(drawDurationMs);
+          if (_stopRequested) break;
+
+          // 6. Finalize: mark DB status=resolved (prizes already paid on-chain)
+          await pool.query(
+            `UPDATE bingo_rounds SET status = 'resolved', updated_at = NOW()
+             WHERE round_id = $1 AND status = 'drawing'`,
+            [roundId]
+          );
         }
       }
-      console.log(`[BingoOnChainScheduler] Room ${roomNumber} Round #${roundId} closed + VRF requested (tx: ${closeTx})`);
 
-      // 4. Wait for VRF fulfillment + auto-resolution (handled by bingoEventService)
-      _roomStates[roomNumber] = { ..._roomStates[roomNumber], phase: 'vrf_wait' };
-      console.log(`[BingoOnChainScheduler] Room ${roomNumber} Round #${roundId} waiting for VRF…`);
-
-      const resolution = await waitForVrfAndResolution(roundId);
-
-      if (!resolution) {
-        // Timeout or stop — move to cooldown and try next round
-        console.log(`[BingoOnChainScheduler] Room ${roomNumber} Round #${roundId} cancelled or timed out — skipping draw`);
-      } else {
-        // 5. Wait for draw animation to complete (frontend syncs to draw_started_at)
-        const drawDurationMs = calcDrawDurationMs(resolution.lineWinnerBall, resolution.bingoWinnerBall);
-        const drawEnd = new Date(Date.now() + drawDurationMs).toISOString();
-        _roomStates[roomNumber] = { ..._roomStates[roomNumber], phase: 'drawing', phaseEndTime: drawEnd };
-        console.log(`[BingoOnChainScheduler] Room ${roomNumber} Round #${roundId} drawing ${Math.ceil(drawDurationMs / 1000)}s`);
-
-        await sleep(drawDurationMs);
-        if (_stopRequested) break;
-
-        // 6. Finalize: mark DB status=resolved (prizes already paid on-chain)
-        await pool.query(
-          `UPDATE bingo_rounds SET status = 'resolved', updated_at = NOW()
-           WHERE round_id = $1 AND status = 'drawing'`,
-          [roundId]
-        );
-      }
-
-      // 7. Cooldown
+      // 7. Cooldown (always — empty or not)
       const cooldownEnd = new Date(Date.now() + COOLDOWN_SECONDS * 1000).toISOString();
       _roomStates[roomNumber] = { ..._roomStates[roomNumber], phase: 'results', phaseEndTime: cooldownEnd };
       console.log(`[BingoOnChainScheduler] Room ${roomNumber} cooldown ${COOLDOWN_SECONDS}s`);
