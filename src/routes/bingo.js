@@ -181,12 +181,12 @@ router.get('/rounds/:id', publicLimiter, async (req, res) => {
         Infinity
       );
 
-      // Strip winner identity and financial fields from the round row
+      // Strip winner identity fields only — prize amounts are NOT spoilers
+      // (they don't reveal who won), so they're kept so the UI can display
+      // the prize during LINE_ANNOUNCED / BINGO_ANNOUNCED overlays.
       const REDACT_ROUND = [
-        'line_winner', 'bingo_winner',
-        'line_prize', 'bingo_prize',
-        'jackpot_won', 'jackpot_paid',
-        'vrf_random_word',
+        'line_winner', 'bingo_winner', // identity — redacted until resolved
+        'vrf_random_word',             // VRF entropy — always redacted
       ];
       const sanitizedRound = { ...detail.round };
       REDACT_ROUND.forEach(f => { sanitizedRound[f] = null; });
