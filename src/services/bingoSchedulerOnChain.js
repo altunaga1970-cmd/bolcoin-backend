@@ -148,6 +148,67 @@ async function waitForVrfAndResolution(roundId) {
 }
 
 /**
+ * Recover rounds stuck in 'drawing' status from a previous session killed mid-animation.
+ *
+ * When the server is killed during the draw animation sleep (e.g. Railway rolling deploy),
+ * the scheduler's step 6 (UPDATE drawing→resolved) never runs.
+ * These rounds are already resolved on-chain (prizes paid) but stuck in DB.
+ *
+ * Uses draw_started_at + calcDrawDurationMs() to determine if animation has elapsed:
+ *   - Elapsed: mark resolved immediately
+ *   - Still running: wait remaining time, then mark resolved
+ *
+ * All drawing rounds are handled concurrently (DB-only, no on-chain txs).
+ */
+async function recoverDrawingRounds() {
+  try {
+    const { rows } = await pool.query(
+      `SELECT round_id, draw_started_at, line_winner_ball, bingo_winner_ball
+       FROM bingo_rounds
+       WHERE status = 'drawing'`
+    );
+
+    if (rows.length === 0) {
+      console.log('[BingoOnChainScheduler] Recovery: no drawing rounds to recover');
+      return;
+    }
+
+    console.log(`[BingoOnChainScheduler] Recovery: ${rows.length} drawing round(s) to finalize: [${rows.map(r => r.round_id).join(', ')}]`);
+
+    // Handle all drawing rounds concurrently — DB-only, safe to parallelize
+    await Promise.all(rows.map(async (row) => {
+      const { round_id, draw_started_at, line_winner_ball, bingo_winner_ball } = row;
+
+      const drawDurationMs = calcDrawDurationMs(
+        parseInt(line_winner_ball) || 0,
+        parseInt(bingo_winner_ball) || 0
+      );
+
+      const drawStartedAt = draw_started_at ? new Date(draw_started_at).getTime() : 0;
+      const remainingMs = (drawStartedAt + drawDurationMs) - Date.now();
+
+      if (remainingMs > 0) {
+        console.log(`[BingoOnChainScheduler] Recovery: Round #${round_id} still animating — waiting ${Math.ceil(remainingMs / 1000)}s`);
+        await sleep(remainingMs);
+      }
+
+      if (_stopRequested) return;
+
+      await pool.query(
+        `UPDATE bingo_rounds SET status = 'resolved', updated_at = NOW()
+         WHERE round_id = $1 AND status = 'drawing'`,
+        [round_id]
+      );
+      console.log(`[BingoOnChainScheduler] Recovery: Round #${round_id} drawing → resolved`);
+    }));
+
+    console.log('[BingoOnChainScheduler] Recovery: drawing rounds finalized');
+  } catch (err) {
+    console.warn('[BingoOnChainScheduler] recoverDrawingRounds error (non-fatal):', err.message);
+  }
+}
+
+/**
  * On restart the contract may already have up to MAX_OPEN_ROUNDS open.
  * Close each one (waiting for its buy-window if needed) so room loops
  * can safely call createRound() without hitting MaxOpenRoundsReached.
@@ -469,6 +530,11 @@ async function start() {
   // Close any open rounds left over from a previous session before creating new ones.
   // This prevents MaxOpenRoundsReached() on restart.
   await recoverOpenRounds();
+  if (_stopRequested) { _running = false; return; }
+
+  // Finalize any rounds left in 'drawing' status from a previous session killed mid-animation.
+  // On-chain these are already resolved (prizes paid); we just need to update the DB status.
+  await recoverDrawingRounds();
   if (_stopRequested) { _running = false; return; }
 
   for (let room = 1; room <= NUM_ROOMS; room++) {
