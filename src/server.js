@@ -95,6 +95,16 @@ async function startServer() {
         } else {
             console.log('Scheduler deshabilitado (ENABLE_SCHEDULER=false)');
         }
+
+        // Keno on-chain event indexer — persists BetResolved events to keno_games
+        if (process.env.KENO_CONTRACT_ADDRESS) {
+            try {
+                const { kenoIndexer } = require('./services/kenoIndexer');
+                await kenoIndexer.start();
+            } catch (error) {
+                console.error('[DEGRADED] Error iniciando KenoIndexer (no fatal):', error.message);
+            }
+        }
     } else {
         console.log('[DEGRADED] VRF y Scheduler omitidos (DB no disponible)');
     }
@@ -113,6 +123,9 @@ async function startServer() {
             await scheduler.stop();
         }
         vrfService.stopEventListener();
+        if (process.env.KENO_CONTRACT_ADDRESS) {
+            try { require('./services/kenoIndexer').kenoIndexer.stop(); } catch (_) {}
+        }
 
         server.close(() => {
             console.log('Servidor cerrado correctamente');
