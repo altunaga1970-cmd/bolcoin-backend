@@ -47,6 +47,7 @@ const JS_MIGRATIONS = [
   'enable-bingo.js',
   'add-bingo-feature-flag.js',
   'add-bingo-winner-balls.js',
+  'fix-bingo-winner-varchar.js',
 ];
 
 async function runBaseSchema() {
