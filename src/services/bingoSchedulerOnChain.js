@@ -303,17 +303,25 @@ async function roomLoop(roomNumber) {
       );
       const totalCards = cardRows[0] ? (parseInt(cardRows[0].total_cards) || 0) : 0;
 
+      // NOTE: the contract auto-cancels (no VRF, no LINK) when closeAndRequestVRF()
+      // is called on a 0-card round. cancelRound() here saves some gas on the close
+      // tx itself, but falls back to closeAndRequestVRF() if the contract rejects it
+      // (e.g. cancelRound may require buy window still open on some implementations).
+      let usedCancel = false;
       if (totalCards === 0) {
-        // Empty round — cancel on-chain, skip VRF
-        console.log(`[BingoOnChainScheduler] Room ${roomNumber} Round #${roundId} — 0 cards sold, cancelling (no VRF)`);
+        console.log(`[BingoOnChainScheduler] Room ${roomNumber} Round #${roundId} — 0 cards, attempting cancelRound (no VRF)`);
         try {
           await bingoService.cancelRound(roundId);
-          console.log(`[BingoOnChainScheduler] Room ${roomNumber} Round #${roundId} cancelled (no gas wasted on VRF)`);
+          usedCancel = true;
+          console.log(`[BingoOnChainScheduler] Room ${roomNumber} Round #${roundId} cancelled (gas saved)`);
         } catch (err) {
-          console.warn(`[BingoOnChainScheduler] Room ${roomNumber} cancelRound(${roundId}) failed: ${err.message}`);
+          console.warn(`[BingoOnChainScheduler] Room ${roomNumber} cancelRound(${roundId}) failed: ${err.message} — falling back to closeAndRequestVRF (contract will auto-cancel)`);
         }
-      } else {
-        // 3b. Cards exist — close and request VRF (retry up to 3× on transient failures).
+      }
+
+      if (!usedCancel) {
+        // 3b. Cards exist (or cancelRound fallback) — close and request VRF.
+        // If 0 cards: contract emits RoundCancelled automatically (no LINK spent).
         // Critical: a failed close leaves the round in _openRoundIds on-chain.
         // Retrying here (not by creating a new round) avoids stale-round accumulation.
         let closeTx;
