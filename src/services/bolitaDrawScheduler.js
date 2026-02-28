@@ -71,7 +71,10 @@ function parseDrawTimes() {
  * Minutes before scheduledClose to open the draw.
  */
 function openBeforeMs() {
-  const min = parseInt(process.env.BOLITA_OPEN_BEFORE_MIN) || 60;
+  // Default: 24h (1440 min) — ensures all 3 daily draws are always open
+  // simultaneously so users can always see and bet on the next 3 draws.
+  // Override via BOLITA_OPEN_BEFORE_MIN env var.
+  const min = parseInt(process.env.BOLITA_OPEN_BEFORE_MIN) || 1440;
   return Math.max(5, min) * 60 * 1000;
 }
 
@@ -89,17 +92,19 @@ function drawNumber(closeUtc) {
 }
 
 /**
- * All draw time slots in the next 48 hours, ordered by scheduledClose asc.
+ * All draw time slots in the next 72 hours, ordered by scheduledClose asc.
+ * Horizon is 72h so that with a 24h open window all 3 upcoming draws are
+ * always found and created in advance.
  * Each slot has: { drawNum, scheduledCloseUnix, openAtMs }
  */
 function upcomingSlots() {
   const times    = parseDrawTimes();
   const obMs     = openBeforeMs();
   const now      = Date.now();
-  const horizon  = now + 48 * 60 * 60 * 1000;
+  const horizon  = now + 72 * 60 * 60 * 1000;
   const slots    = [];
 
-  for (let dayOffset = -1; dayOffset <= 2; dayOffset++) {
+  for (let dayOffset = -1; dayOffset <= 3; dayOffset++) {
     for (const { hour, minute } of times) {
       const d = new Date(now);
       d.setUTCHours(hour, minute, 0, 0);
