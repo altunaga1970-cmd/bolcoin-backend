@@ -128,6 +128,16 @@ class BingoEventService {
           await bingoResolverService.resolveRound(round_id);
         } catch (err) {
           console.error(`[BingoEvents] Retry resolveRound(${round_id}) failed:`, err.message);
+          // Round with no cards can never be resolved — cancel it to stop infinite retries.
+          // (VRF fulfilled but no cards were ever indexed into DB for this round.)
+          if (err.message?.includes('no cards')) {
+            await pool.query(
+              `UPDATE bingo_rounds SET status = 'cancelled', updated_at = NOW()
+               WHERE round_id = $1 AND status = 'vrf_fulfilled'`,
+              [round_id]
+            );
+            console.log(`[BingoEvents] Round #${round_id} has no cards — marked cancelled to stop retries`);
+          }
         }
       }
     } catch (err) {
