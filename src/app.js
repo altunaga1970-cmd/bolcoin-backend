@@ -47,6 +47,7 @@ const lotteryRoutes = require('./routes/lottery');
 const kenoRoutes = require('./routes/keno');
 const adminBolitaRoutes = require('./routes/adminBolita');
 const bingoRoutes = require('./routes/bingo');
+const referralsRoutes = require('./routes/referrals');
 // MVP: Nuevas rutas
 const publicConfigRoutes = require('./routes/publicConfig');
 const adminFlagsRoutes = require('./routes/adminFlags');
@@ -534,6 +535,7 @@ app.use('/api/lottery', lotteryRoutes);
 app.use('/api/keno', kenoRoutes);
 app.use('/api/admin/bolita', adminBolitaRoutes);
 app.use('/api/bingo', bingoRoutes);
+app.use('/api/referrals', referralsRoutes);
 // app.use('/api/user', userRoutes);
 
 // =================================
