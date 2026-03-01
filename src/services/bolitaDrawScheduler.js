@@ -30,6 +30,9 @@ const {
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
+// Custom error selector: DrawNotFound() — draw doesn't exist on-chain (orphan)
+const ERR_DRAW_NOT_FOUND = '0x039a603d';
+
 // VRF timeout in the contract is 2 hours. We wait 2hr 5min before cancelling.
 const VRF_STALE_MINUTES = 125;
 
@@ -129,6 +132,15 @@ function upcomingSlots() {
 }
 
 // ── Contract call wrappers ─────────────────────────────────────────────────
+
+/**
+ * Returns true when the error is DrawNotFound() — the draw doesn't exist on-chain.
+ * These are DB orphans from the old off-chain scheduler.
+ */
+function isDrawNotFound(err) {
+  const data = err?.data || err?.error?.data || '';
+  return typeof data === 'string' && data.startsWith(ERR_DRAW_NOT_FOUND);
+}
 
 /**
  * Send a transaction with nonce-error retry.
@@ -285,7 +297,15 @@ async function _closeExpiredDraws() {
       );
       console.log(`[BolitaScheduler] Draw #${draw.id} closed — VRF requested`);
     } catch (err) {
-      console.error(`[BolitaScheduler] closeDraw(${draw.id}) failed: ${err.message}`);
+      if (isDrawNotFound(err)) {
+        console.warn(`[BolitaScheduler] closeDraw(${draw.id}): DrawNotFound on-chain — marking cancelled in DB`);
+        await pool.query(
+          `UPDATE draws SET status = 'cancelled', updated_at = NOW() WHERE id = $1`,
+          [draw.id]
+        );
+      } else {
+        console.error(`[BolitaScheduler] closeDraw(${draw.id}) failed: ${err.message}`);
+      }
     }
   }
 }
@@ -410,8 +430,11 @@ async function _cleanupOrphanDraws() {
       const onChain = await contract.draws(row.id);
       if (Number(onChain.id) === 0) {
         // Draw in DB but not on-chain — orphan from old off-chain scheduler
-        console.log(`[BolitaScheduler] Cleanup: removing orphan draw "${row.draw_number}" (db_id=${row.id}) — not on-chain`);
-        await pool.query(`DELETE FROM draws WHERE id = $1`, [row.id]);
+        console.log(`[BolitaScheduler] Cleanup: cancelling orphan draw "${row.draw_number}" (db_id=${row.id}) — not on-chain`);
+        await pool.query(
+          `UPDATE draws SET status = 'cancelled', updated_at = NOW() WHERE id = $1`,
+          [row.id]
+        );
       }
     } catch (err) {
       // RPC error — skip this draw, leave it for next startup
@@ -449,7 +472,15 @@ async function _recoverOnStartup() {
       );
       console.log(`[BolitaScheduler] Recovery: draw #${draw.id} closed — VRF requested`);
     } catch (err) {
-      console.error(`[BolitaScheduler] Recovery: closeDraw(${draw.id}) failed: ${err.message}`);
+      if (isDrawNotFound(err)) {
+        console.warn(`[BolitaScheduler] Recovery: draw #${draw.id} DrawNotFound on-chain — marking cancelled in DB`);
+        await pool.query(
+          `UPDATE draws SET status = 'cancelled', updated_at = NOW() WHERE id = $1`,
+          [draw.id]
+        );
+      } else {
+        console.error(`[BolitaScheduler] Recovery: closeDraw(${draw.id}) failed: ${err.message}`);
+      }
     }
   }
 }

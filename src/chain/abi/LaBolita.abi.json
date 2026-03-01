@@ -35,6 +35,24 @@
   },
   {
     "inputs": [{"internalType": "uint256", "name": "drawId", "type": "uint256"}],
+    "name": "draws",
+    "outputs": [
+      {"internalType": "uint256",    "name": "id",            "type": "uint256"},
+      {"internalType": "string",     "name": "drawNumber",    "type": "string"},
+      {"internalType": "uint256",    "name": "scheduledTime", "type": "uint256"},
+      {"internalType": "uint8",      "name": "status",        "type": "uint8"},
+      {"internalType": "uint16",     "name": "winningNumber", "type": "uint16"},
+      {"internalType": "uint256",    "name": "totalBets",     "type": "uint256"},
+      {"internalType": "uint256",    "name": "totalAmount",   "type": "uint256"},
+      {"internalType": "uint256",    "name": "totalPaidOut",  "type": "uint256"},
+      {"internalType": "uint256",    "name": "vrfRequestId",  "type": "uint256"},
+      {"internalType": "uint256",    "name": "vrfRequestedAt","type": "uint256"}
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [{"internalType": "uint256", "name": "drawId", "type": "uint256"}],
     "name": "cancelDraw",
     "outputs": [],
     "stateMutability": "nonpayable",
