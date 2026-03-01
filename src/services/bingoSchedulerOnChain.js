@@ -75,11 +75,17 @@ async function closeExpiredOpenRounds() {
     try {
       const info = await contract.getRoundInfo(roundId);
       if (Number(info.scheduledClose) <= now) {
-        console.log(`[BingoOnChainScheduler] closeExpiredOpenRounds: closing expired round #${roundId}`);
-        await bingoService.closeRound(roundId);
+        const hasCards = Number(info.totalCards) > 0;
+        if (hasCards) {
+          console.log(`[BingoOnChainScheduler] closeExpiredOpenRounds: closeAndRequestVRF round #${roundId} (${info.totalCards} cards)`);
+          await bingoService.closeRound(roundId);
+        } else {
+          console.log(`[BingoOnChainScheduler] closeExpiredOpenRounds: cancelRound #${roundId} (0 cards)`);
+          await bingoService.cancelRound(roundId);
+        }
       }
     } catch (err) {
-      console.warn(`[BingoOnChainScheduler] closeExpiredOpenRounds: round #${roundId}: ${err.message}`);
+      console.warn(`[BingoOnChainScheduler] closeExpiredOpenRounds: round #${roundId} failed: ${err.message}`, err.data ?? '');
     }
   }
 }
