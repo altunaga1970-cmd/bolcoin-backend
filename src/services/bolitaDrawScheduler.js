@@ -47,6 +47,7 @@ const POLL_INTERVAL_MS = 60 * 1000; // 1 minute
 let _pollTimer = null;
 let _running   = false;
 let _stopRequested = false;
+let _tickCount = 0;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -219,24 +220,44 @@ async function _createAndOpen(num, scheduledCloseUnix) {
 
 /**
  * Step 1 — Ensure all draw slots whose open window has arrived exist in DB.
- * Creates draws that are missing (i.e., no DB row with that draw_number).
+ * Creates draws that are missing or that were previously cancelled/completed.
+ *
+ * IMPORTANT: draws.draw_number has a UNIQUE constraint. If a cancelled/completed
+ * draw occupies the slot we need to recreate, we rename it first so the INSERT
+ * in _createAndOpen() doesn't hit the unique constraint.
  */
 async function _ensureDrawsExist() {
   const slots = upcomingSlots();
   const now   = Date.now();
 
+  let slotsReady = 0;
   for (const slot of slots) {
     if (_stopRequested) return;
 
     // Create only when the "open window" has arrived (openAtMs <= now)
     if (now < slot.openAtMs) continue;
+    slotsReady++;
 
     // Check if already in DB (by draw_number — unique across all draws)
     const { rows } = await pool.query(
-      `SELECT id FROM draws WHERE draw_number = $1`,
+      `SELECT id, status FROM draws WHERE draw_number = $1`,
       [slot.drawNum]
     );
-    if (rows.length > 0) continue;
+
+    if (rows.length > 0) {
+      const { id: oldId, status: oldStatus } = rows[0];
+      // Active draw (scheduled/open/vrf_pending) — skip, already handled
+      if (oldStatus !== 'cancelled' && oldStatus !== 'completed') {
+        continue;
+      }
+      // Draw was cancelled/completed — rename its draw_number to free the unique slot
+      // so we can create a fresh on-chain draw for this time slot.
+      console.log(`[BolitaScheduler] Slot "${slot.drawNum}" occupied by ${oldStatus} draw #${oldId} — renaming to free slot`);
+      await pool.query(
+        `UPDATE draws SET draw_number = draw_number || '-obsolete-' || id WHERE id = $1`,
+        [oldId]
+      );
+    }
 
     console.log(`[BolitaScheduler] Creating draw "${slot.drawNum}" (closes ${new Date(slot.scheduledCloseUnix * 1000).toISOString()})`);
     try {
@@ -244,6 +265,11 @@ async function _ensureDrawsExist() {
     } catch (err) {
       console.error(`[BolitaScheduler] Failed to create "${slot.drawNum}": ${err.message}`);
     }
+  }
+
+  if (slotsReady === 0) {
+    // All upcoming slots are beyond the open window — normal during off-peak hours
+    // when BOLITA_OPEN_BEFORE_MIN is small. With 1440min (24h) this never fires.
   }
 }
 
@@ -382,6 +408,13 @@ async function _cancelStaleDraws() {
 async function _tick() {
   if (!_running || _stopRequested) return;
 
+  _tickCount++;
+  // Log a heartbeat every 10 ticks (~10 min) so we can confirm the scheduler is alive
+  if (_tickCount % 10 === 1) {
+    console.log(`[BolitaScheduler] Tick #${_tickCount} — scheduler alive`);
+  }
+
+  const tickStart = Date.now();
   try {
     await _ensureDrawsExist();
     await _openStuckScheduledDraws();
@@ -389,7 +422,7 @@ async function _tick() {
     await _resolveBatchDraws();
     await _cancelStaleDraws();
   } catch (err) {
-    console.error('[BolitaScheduler] Poll tick error:', err.message);
+    console.error(`[BolitaScheduler] Poll tick error (tick #${_tickCount}, ${Date.now() - tickStart}ms): ${err.message}`);
   }
 
   if (!_stopRequested) {

@@ -163,7 +163,7 @@ async function up() {
 
     await client.query('COMMIT');
     console.log('[Migration] Feature flags, game config and admin wallets tables created successfully');
-    console.log('[Migration] Seeds inserted: game_keno=true, game_bolita=false, game_fortuna=false');
+    console.log('[Migration] Seeds inserted: game_keno=true, game_bolita=true, game_fortuna=false');
     console.log('[Migration] Keno config: betAmount=1 USDT, feeBps=1200 (12%), maxPayout=50 USDT');
 
   } catch (err) {
