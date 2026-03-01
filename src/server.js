@@ -96,6 +96,16 @@ async function startServer() {
             console.log('Scheduler deshabilitado (ENABLE_SCHEDULER=false)');
         }
 
+        // La Bolita on-chain event indexer — persists BetResolved/DrawResolved to DB
+        if (process.env.BOLITA_CONTRACT_ADDRESS) {
+            try {
+                const { bolitaIndexer } = require('./services/bolitaIndexer');
+                await bolitaIndexer.start();
+            } catch (error) {
+                console.error('[DEGRADED] Error iniciando BolitaIndexer (no fatal):', error.message);
+            }
+        }
+
         // Keno on-chain event indexer — persists BetResolved events to keno_games
         if (process.env.KENO_CONTRACT_ADDRESS) {
             try {
@@ -123,6 +133,9 @@ async function startServer() {
             await scheduler.stop();
         }
         vrfService.stopEventListener();
+        if (process.env.BOLITA_CONTRACT_ADDRESS) {
+            try { require('./services/bolitaIndexer').bolitaIndexer.stop(); } catch (_) {}
+        }
         if (process.env.KENO_CONTRACT_ADDRESS) {
             try { require('./services/kenoIndexer').kenoIndexer.stop(); } catch (_) {}
         }
