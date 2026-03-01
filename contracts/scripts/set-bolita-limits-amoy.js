@@ -83,40 +83,60 @@ async function main() {
 
   // ── 3. Calcular límites BRM ───────────────────────────────────────────────
   //   maxExposurePerNumber = pool * 30% / 1000
-  //   Si el pool es 0 (no financiado), usar fallback de 0.30 USDT
+  //   Si el pool es 0 (no financiado), usar fallback de MIN_BET
   let brmExposure;
   if (curPool === 0n) {
-    console.warn("\n  WARN: pool = 0. Usando fallback BRM de 0.30 USDT.");
-    brmExposure = ethers.parseUnits("0.30", TOKEN_DECIMALS);
+    console.warn("\n  WARN: pool = 0. Usando MIN_BET como fallback de exposición.");
+    brmExposure = MIN_BET;
   } else {
     brmExposure = (curPool * RISK_PCT_NUM) / (RISK_PCT_DEN * PARLE_MULTIPLIER);
-    if (brmExposure === 0n) {
-      // Pool too small for integer division — use 1 μUSDT minimum
-      brmExposure = 1n;
-    }
+    if (brmExposure === 0n) brmExposure = 1n;
   }
 
   // Allow env override
-  const MAX_EXPOSURE = process.env.MAX_EXPOSURE
+  let MAX_EXPOSURE = process.env.MAX_EXPOSURE
     ? ethers.parseUnits(process.env.MAX_EXPOSURE, TOKEN_DECIMALS)
     : brmExposure;
 
-  // maxBetAmount = maxExposurePerNumber (a single bet can't exceed the exposure cap)
-  const MAX_BET = process.env.MAX_BET
-    ? ethers.parseUnits(process.env.MAX_BET, TOKEN_DECIMALS)
-    : MAX_EXPOSURE;
+  // Contract requires: minBet <= maxBet AND minBet <= maxExposure.
+  // If the BRM-computed limit is below minBet, clamp it up and warn.
+  // This happens when the pool is too small relative to the min bet size.
+  if (MAX_EXPOSURE < MIN_BET) {
+    const requiredPool = (MIN_BET * PARLE_MULTIPLIER * RISK_PCT_DEN) / RISK_PCT_NUM;
+    console.warn(`\n  ⚠️  ADVERTENCIA BRM: pool insuficiente para los límites actuales.`);
+    console.warn(`     BRM calcula exposure = ${ethers.formatUnits(MAX_EXPOSURE, TOKEN_DECIMALS)} USDT < minBet = ${ethers.formatUnits(MIN_BET, TOKEN_DECIMALS)} USDT.`);
+    console.warn(`     Para BRM estricto con minBet=${ethers.formatUnits(MIN_BET, TOKEN_DECIMALS)} necesitas pool ≥ ${ethers.formatUnits(requiredPool, TOKEN_DECIMALS)} USDT.`);
+    console.warn(`     Usando minBet (${ethers.formatUnits(MIN_BET, TOKEN_DECIMALS)} USDT) como exposure mínima aceptable.`);
+    console.warn(`     → Recomienda: fondeá el pool (fund-bolita-amoy.js) antes de abrir a producción.`);
+    MAX_EXPOSURE = MIN_BET;
+  }
+
+  // maxBetAmount must be strictly > minBetAmount (contract invariant).
+  // Set it to max(MAX_EXPOSURE, MIN_BET) + 1 μUSDT so the single-bet ceiling
+  // is just above the minimum while the exposure limit enforces the real cap.
+  let MAX_BET;
+  if (process.env.MAX_BET) {
+    MAX_BET = ethers.parseUnits(process.env.MAX_BET, TOKEN_DECIMALS);
+  } else {
+    // maxBet = exposure limit, but must be > minBet
+    MAX_BET = MAX_EXPOSURE <= MIN_BET ? MIN_BET + 1n : MAX_EXPOSURE;
+  }
 
   const poolUsdt = Number(ethers.formatUnits(curPool, TOKEN_DECIMALS));
   const expUsdt  = Number(ethers.formatUnits(MAX_EXPOSURE, TOKEN_DECIMALS));
+  const brmPct   = poolUsdt > 0 ? ((expUsdt * 1000 / poolUsdt) * 100) : Infinity;
 
   console.log("\n[3/4] Análisis BRM:");
   console.log(`  Pool disponible      : ${poolUsdt.toFixed(6)} USDT`);
   console.log(`  Riesgo máximo (30%)  : ${(poolUsdt * 0.30).toFixed(6)} USDT por sorteo`);
   console.log(`  Multiplicador Parle  : 1000x`);
-  console.log(`  maxExposurePerNumber : ${expUsdt.toFixed(6)} USDT (= pool*30%/1000)`);
-  console.log(`    → Peor caso Parle  : ${(expUsdt * 1000).toFixed(6)} USDT payout (${((expUsdt * 1000 / poolUsdt) * 100).toFixed(1)}% del pool)`);
-  console.log(`    → Peor caso Centena: ${(expUsdt * 300).toFixed(6)} USDT payout (${((expUsdt * 300 / poolUsdt) * 100).toFixed(1)}% del pool)`);
-  console.log(`    → Peor caso Fijo   : ${(expUsdt * 65).toFixed(6)} USDT payout (${((expUsdt * 65 / poolUsdt) * 100).toFixed(1)}% del pool)`);
+  console.log(`  maxExposurePerNumber : ${expUsdt.toFixed(6)} USDT`);
+  console.log(`    → Peor caso Parle  : ${(expUsdt * 1000).toFixed(6)} USDT payout (${brmPct.toFixed(1)}% del pool)`);
+  console.log(`    → Peor caso Centena: ${(expUsdt * 300).toFixed(6)} USDT payout (${(expUsdt * 300 / poolUsdt * 100).toFixed(1)}% del pool)`);
+  console.log(`    → Peor caso Fijo   : ${(expUsdt * 65).toFixed(6)} USDT payout (${(expUsdt * 65 / poolUsdt * 100).toFixed(1)}% del pool)`);
+  if (brmPct > 30) {
+    console.warn(`  ⚠️  RIESGO REAL Parle: ${brmPct.toFixed(1)}% del pool (objetivo BRM: 30%). Fondear más para reducirlo.`);
+  }
   console.log(`  minBetAmount         : ${ethers.formatUnits(MIN_BET, TOKEN_DECIMALS)} USDT`);
   console.log(`  maxBetAmount         : ${ethers.formatUnits(MAX_BET, TOKEN_DECIMALS)} USDT`);
 
