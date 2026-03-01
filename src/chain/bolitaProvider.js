@@ -8,27 +8,12 @@
 
 const ethers = require('ethers');
 const LaBolitaABI = require('./abi/LaBolita.abi.json');
-const { getProvider, getSigner } = require('./provider');
+const { getProvider, getNonceManagedSigner, GAS_OVERRIDES } = require('./provider');
 
 const BOLITA_CONTRACT_ADDRESS = process.env.BOLITA_CONTRACT_ADDRESS;
 
-// ── Nonce-managed signer ───────────────────────────────────────────────────
-// Serializes nonce assignment so concurrent draw operations (create, open,
-// close, resolve) don't collide on the same operator wallet.
-let _nonceManagedSigner = null;
-
-function getNonceManagedSigner() {
-  if (!_nonceManagedSigner) {
-    _nonceManagedSigner = new ethers.NonceManager(getSigner());
-  }
-  return _nonceManagedSigner;
-}
-
-// Gas overrides for Polygon Amoy — eth_maxPriorityFeePerGas not supported.
-const AMOY_GAS_OVERRIDES = {
-  maxPriorityFeePerGas: ethers.parseUnits('30', 'gwei'),
-  maxFeePerGas:         ethers.parseUnits('35', 'gwei'),
-};
+// Re-export as AMOY_GAS_OVERRIDES for backwards compatibility with callers.
+const AMOY_GAS_OVERRIDES = GAS_OVERRIDES;
 
 let _bolitaContract = null;
 
@@ -62,23 +47,20 @@ function getBolitaContract() {
 }
 
 /**
- * Reset the NonceManager so it re-reads the nonce from the chain on the next tx.
- * Call this when a NONCE_EXPIRED error is caught.
+ * Reset the shared NonceManager.
+ * Delegates to provider.js so Bingo and Bolita share one reset.
  */
 function resetNonceManager() {
-  if (_nonceManagedSigner) {
-    _nonceManagedSigner.reset();
-    console.log('[Chain] Bolita NonceManager reset — will re-sync nonce from chain on next tx');
-  }
+  const { resetNonceManagedSigner } = require('./provider');
+  resetNonceManagedSigner();
 }
 
 /**
  * Returns true if the error is a nonce-related rejection from the node.
  */
 function isNonceError(err) {
-  return err.code === 'NONCE_EXPIRED'
-    || err.message?.includes('nonce too low')
-    || err.message?.includes('nonce has already been used');
+  const { isNonceError: _isNonceError } = require('./provider');
+  return _isNonceError(err);
 }
 
 module.exports = {

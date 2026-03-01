@@ -17,6 +17,54 @@ const ERC20_TRANSFER_ABI = [
 let _provider = null;
 let _signer = null;
 let _contract = null;
+let _nonceManagedSigner = null;
+
+/**
+ * Shared NonceManager-wrapped signer for all on-chain schedulers.
+ * A single instance is required so Bingo and Bolita schedulers don't
+ * each maintain their own nonce counter over the same wallet — two
+ * independent NonceManagers would read the same base nonce and collide.
+ */
+function getNonceManagedSigner() {
+    if (!_nonceManagedSigner) {
+        _nonceManagedSigner = new ethers.NonceManager(getSigner());
+    }
+    return _nonceManagedSigner;
+}
+
+/**
+ * Reset the shared NonceManager so it re-reads the nonce from the chain
+ * on the next transaction. Call this when a NONCE_EXPIRED error is caught.
+ */
+function resetNonceManagedSigner() {
+    if (_nonceManagedSigner) {
+        _nonceManagedSigner.reset();
+        console.log('[Chain] Shared NonceManager reset — will re-sync nonce from chain on next tx');
+    }
+}
+
+/**
+ * Returns true if the error is a nonce-related rejection from the node.
+ */
+function isNonceError(err) {
+    return err.code === 'NONCE_EXPIRED'
+        || err.message?.includes('nonce too low')
+        || err.message?.includes('nonce has already been used');
+}
+
+/**
+ * Gas overrides for Polygon Amoy — configurable via env vars.
+ * Defaults are safe minimums for Amoy testnet.
+ * For mainnet: set GAS_MAX_FEE_GWEI and GAS_PRIORITY_FEE_GWEI env vars.
+ */
+const GAS_OVERRIDES = {
+    maxPriorityFeePerGas: ethers.parseUnits(
+        process.env.GAS_PRIORITY_FEE_GWEI || '30', 'gwei'
+    ),
+    maxFeePerGas: ethers.parseUnits(
+        process.env.GAS_MAX_FEE_GWEI || '35', 'gwei'
+    ),
+};
 
 /**
  * Obtener provider JSON-RPC.
@@ -114,6 +162,10 @@ async function sendUsdtTransfer(toAddress, amountUsdt) {
 module.exports = {
     getProvider,
     getSigner,
+    getNonceManagedSigner,
+    resetNonceManagedSigner,
+    isNonceError,
+    GAS_OVERRIDES,
     getLaBolitaContract,
     sendUsdtTransfer,
     LA_BOLITA_ABI

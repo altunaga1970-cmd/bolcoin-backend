@@ -3,29 +3,11 @@ const BingoGameABI = require('./abi/BingoGame.abi.json');
 
 const BINGO_CONTRACT_ADDRESS = process.env.BINGO_CONTRACT_ADDRESS;
 
-const { getProvider, getSigner } = require('./provider');
+const { getProvider, getNonceManagedSigner, GAS_OVERRIDES } = require('./provider');
 
-// ── Nonce-managed signer ───────────────────────────────────────────────────
-// Four room loops share a single operator wallet. ethers.Wallet resolves
-// nonces via eth_getTransactionCount('pending'), which is not safe for
-// concurrent callers — two rooms can read the same pending nonce and both
-// submit txs that collide. NonceManager serialises nonce assignment so each
-// call gets a unique, sequentially incremented nonce.
-let _nonceManagedSigner = null;
-
-function getNonceManagedSigner() {
-  if (!_nonceManagedSigner) {
-    _nonceManagedSigner = new ethers.NonceManager(getSigner());
-  }
-  return _nonceManagedSigner;
-}
-
-// Gas overrides for Polygon Amoy — eth_maxPriorityFeePerGas is not supported
-// on Amoy so MetaMask/ethers underestimates. Hardcode safe minimums.
-const AMOY_GAS_OVERRIDES = {
-  maxPriorityFeePerGas: ethers.parseUnits('30', 'gwei'),
-  maxFeePerGas:         ethers.parseUnits('35', 'gwei'),
-};
+// Re-export as AMOY_GAS_OVERRIDES for backwards compatibility with callers
+// that destructure it from this module.
+const AMOY_GAS_OVERRIDES = GAS_OVERRIDES;
 
 let _bingoContract = null;
 
@@ -62,23 +44,20 @@ function isBingoOnChain() {
 }
 
 /**
- * Reset the NonceManager so it re-reads the nonce from the chain on the next tx.
- * Call this when a NONCE_EXPIRED error is caught (stale in-memory nonce).
+ * Reset the shared NonceManager.
+ * Delegates to provider.js so all contracts share one reset.
  */
 function resetNonceManager() {
-  if (_nonceManagedSigner) {
-    _nonceManagedSigner.reset();
-    console.log('[Chain] NonceManager reset — will re-sync nonce from chain on next tx');
-  }
+  const { resetNonceManagedSigner } = require('./provider');
+  resetNonceManagedSigner();
 }
 
 /**
  * Returns true if the error is a nonce-related rejection from the node.
  */
 function isNonceError(err) {
-  return err.code === 'NONCE_EXPIRED'
-    || err.message?.includes('nonce too low')
-    || err.message?.includes('nonce has already been used');
+  const { isNonceError: _isNonceError } = require('./provider');
+  return _isNonceError(err);
 }
 
 module.exports = {

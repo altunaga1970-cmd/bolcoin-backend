@@ -62,8 +62,14 @@ async function authenticateWallet(req, res, next) {
         const signature = req.headers['x-wallet-signature'];
         const message = req.headers['x-wallet-message'];
 
-        // Signature is ALWAYS required - no dev bypass
-        const skipSignature = process.env.UNSAFE_SKIP_AUTH === 'true' && process.env.NODE_ENV !== 'production';
+        // Auth bypass: only in NODE_ENV=development on loopback addresses.
+        // Explicitly blocked on Railway/staging/production environments.
+        const skipSignature = process.env.UNSAFE_SKIP_AUTH === 'true'
+            && process.env.NODE_ENV === 'development'
+            && (req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1');
+        if (skipSignature) {
+            console.warn('[Auth] UNSAFE_SKIP_AUTH active — skipping signature verification for', normalizedAddress);
+        }
         if (!skipSignature && (!signature || !message)) {
             return res.status(401).json({
                 success: false,

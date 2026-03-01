@@ -35,12 +35,12 @@ if (databaseUrl) {
 // Configuración del pool de conexiones a PostgreSQL
 const pool = new Pool({
     connectionString: databaseUrl,
-    max: parseInt(process.env.DATABASE_POOL_MAX) || 10,
+    max: parseInt(process.env.DATABASE_POOL_MAX) || 25,
     min: parseInt(process.env.DATABASE_POOL_MIN) || 2,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 10000,
     ssl: process.env.NODE_ENV === 'production'
-        ? { rejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED === 'true' }
+        ? { rejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false' }
         : false,
 });
 

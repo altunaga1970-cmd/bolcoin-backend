@@ -125,6 +125,29 @@ async function startServer() {
                 console.error('[DEGRADED] Error iniciando KenoIndexer (no fatal):', error.message);
             }
         }
+
+        // Bingo on-chain event service + room scheduler (or off-chain scheduler)
+        if (process.env.BINGO_CONTRACT_ADDRESS) {
+            try {
+                const { bingoEventService } = require('./services/bingoEventService');
+                await bingoEventService.start();
+            } catch (error) {
+                console.error('[DEGRADED] Error iniciando BingoEventService (no fatal):', error.message);
+            }
+            try {
+                const bingoSchedulerOnChain = require('./services/bingoSchedulerOnChain');
+                await bingoSchedulerOnChain.start();
+            } catch (error) {
+                console.error('[DEGRADED] Error iniciando BingoSchedulerOnChain (no fatal):', error.message);
+            }
+        } else {
+            try {
+                const bingoScheduler = require('./services/bingoScheduler');
+                await bingoScheduler.start();
+            } catch (error) {
+                console.error('[DEGRADED] Error iniciando BingoScheduler off-chain (no fatal):', error.message);
+            }
+        }
     } else {
         console.log('[DEGRADED] VRF y Scheduler omitidos (DB no disponible)');
     }
@@ -149,6 +172,10 @@ async function startServer() {
         }
         if (process.env.KENO_CONTRACT_ADDRESS) {
             try { require('./services/kenoIndexer').kenoIndexer.stop(); } catch (_) {}
+        }
+        if (process.env.BINGO_CONTRACT_ADDRESS) {
+            try { require('./services/bingoEventService').bingoEventService.stop(); } catch (_) {}
+            try { require('./services/bingoSchedulerOnChain').stop(); } catch (_) {}
         }
 
         server.close(() => {

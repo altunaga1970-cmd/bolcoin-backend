@@ -547,51 +547,11 @@ app.use(notFound);
 app.use(errorHandler);
 
 // =================================
-// START BOLITA EVENT INDEXER + DRAW SCHEDULER (if configured)
-// =================================
-if (process.env.BOLITA_CONTRACT_ADDRESS) {
-    const { bolitaIndexer } = require('./services/bolitaIndexer');
-    bolitaIndexer.start().catch(err => {
-        console.error('[App] Failed to start Bolita indexer:', err.message);
-    });
-
-    // Draw scheduler starts after a short delay so the indexer and DB are ready.
-    // It creates/opens/closes draws automatically based on BOLITA_DRAW_TIMES.
-    setTimeout(() => {
-        const bolitaDrawScheduler = require('./services/bolitaDrawScheduler');
-        bolitaDrawScheduler.start().catch(err => {
-            console.error('[App] Failed to start Bolita draw scheduler:', err.message);
-        });
-    }, 3000);
-}
-
-// =================================
-// START BINGO EVENT SERVICE (if configured) or OFF-CHAIN SCHEDULER
-// =================================
-if (process.env.BINGO_CONTRACT_ADDRESS) {
-    // On-chain mode: event indexer + on-chain room scheduler
-    const { bingoEventService } = require('./services/bingoEventService');
-    bingoEventService.start().catch(err => {
-        console.error('[App] Failed to start Bingo event service:', err.message);
-    });
-    setTimeout(() => {
-        const bingoSchedulerOnChain = require('./services/bingoSchedulerOnChain');
-        bingoSchedulerOnChain.start().catch(err => {
-            console.error('[App] Failed to start Bingo on-chain scheduler:', err.message);
-        });
-    }, 3000);
-} else {
-    // Off-chain mode: start auto-round scheduler after a short delay (let DB init finish)
-    setTimeout(() => {
-        const bingoScheduler = require('./services/bingoScheduler');
-        bingoScheduler.start().catch(err => {
-            console.error('[App] Failed to start Bingo scheduler:', err.message);
-        });
-    }, 3000);
-}
-
-// =================================
 // EXPORTAR APP
 // =================================
+// NOTE: All on-chain service startup (Bolita indexer/scheduler, Bingo event
+// service/scheduler, Keno indexer) is handled in server.js startServer().
+// Do NOT start services here — app.js is required by server.js before
+// startServer() runs, and starting services here causes double-startup.
 
 module.exports = app;
