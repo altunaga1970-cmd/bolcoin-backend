@@ -66,8 +66,17 @@ function _send(text) {
         headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
       },
       (res) => {
-        res.resume();
-        res.on('end', resolve);
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          if (res.statusCode !== 200) {
+            console.warn(`[Monitor] Telegram API error ${res.statusCode}:`, data);
+          } else {
+            const parsed = JSON.parse(data);
+            if (!parsed.ok) console.warn('[Monitor] Telegram API not ok:', data);
+          }
+          resolve();
+        });
       }
     );
     req.on('error', (err) => {
