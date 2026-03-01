@@ -25,7 +25,7 @@
 
 const { ethers } = require("hardhat");
 
-const BOLITA_ADDRESS = "0x6B07df51947f3e476B7574C14fF3293a8a4c846A";
+const BOLITA_ADDRESS = "0x6b07df51947f3e476b7574c14ff3293a8a4c846a";
 const TOKEN_DECIMALS = 6;
 
 // BRM constants

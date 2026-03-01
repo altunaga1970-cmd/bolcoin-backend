@@ -28,7 +28,7 @@ if (!NEW_SUB_ID) {
 
 const CONTRACTS = [
   { name: "BingoGame",    address: "0x4B1f1e94a9651E84D8584760980f74C56Ee61652" },
-  { name: "LaBolitaGame", address: "0x6B07df51947f3e476B7574C14fF3293a8a4c846A" },
+  { name: "LaBolitaGame", address: "0x6b07df51947f3e476b7574c14ff3293a8a4c846a" },
 ];
 
 const GAME_ABI = [
