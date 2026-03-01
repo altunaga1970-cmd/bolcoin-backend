@@ -377,6 +377,49 @@ async function _tick() {
   }
 }
 
+// ── Startup cleanup ────────────────────────────────────────────────────────
+
+/**
+ * Remove bolita draws that exist in DB but NOT on-chain.
+ * These are "orphan" draws created by the old off-chain scheduler before
+ * bolitaDrawScheduler was activated. They have DB IDs that don't correspond
+ * to any contract draw, so contract.closeDraw(id) would revert forever.
+ *
+ * We identify orphans by calling contract.draws(id): if draw.id === 0,
+ * the draw doesn't exist on-chain and should be removed from DB so that
+ * bolitaDrawScheduler can recreate them properly (DB + contract).
+ */
+async function _cleanupOrphanDraws() {
+  const { rows } = await pool.query(
+    `SELECT id, draw_number FROM draws
+     WHERE draw_type = 'bolita' AND status IN ('open', 'scheduled')
+     ORDER BY scheduled_time ASC`
+  );
+  if (rows.length === 0) return;
+
+  let contract;
+  try {
+    contract = getBolitaContract();
+  } catch (err) {
+    console.warn('[BolitaScheduler] Cleanup: contract not available, skipping orphan check');
+    return;
+  }
+
+  for (const row of rows) {
+    try {
+      const onChain = await contract.draws(row.id);
+      if (Number(onChain.id) === 0) {
+        // Draw in DB but not on-chain — orphan from old off-chain scheduler
+        console.log(`[BolitaScheduler] Cleanup: removing orphan draw "${row.draw_number}" (db_id=${row.id}) — not on-chain`);
+        await pool.query(`DELETE FROM draws WHERE id = $1`, [row.id]);
+      }
+    } catch (err) {
+      // RPC error — skip this draw, leave it for next startup
+      console.warn(`[BolitaScheduler] Cleanup: could not verify draw ${row.id}: ${err.message}`);
+    }
+  }
+}
+
 // ── Startup recovery ───────────────────────────────────────────────────────
 
 /**
@@ -432,6 +475,12 @@ async function start() {
   ).join(', ');
   const openMin = Math.round(openBeforeMs() / 60000);
   console.log(`[BolitaScheduler] Starting — draw times (UTC): ${labels} | open window: ${openMin} min before close`);
+
+  try {
+    await _cleanupOrphanDraws();
+  } catch (err) {
+    console.error('[BolitaScheduler] Orphan cleanup error (non-fatal):', err.message);
+  }
 
   try {
     await _recoverOnStartup();

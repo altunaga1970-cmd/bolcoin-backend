@@ -14,7 +14,14 @@ class DrawCloser {
     async closeDrawsBeforeTime() {
         try {
             const minutesBefore = SCHEDULER_CONFIG.CLOSE_BEFORE_DRAW_MINUTES;
-            const draws = await Draw.getNeedingClose(minutesBefore);
+            let draws = await Draw.getNeedingClose(minutesBefore);
+
+            // On-chain mode: bolitaDrawScheduler handles bolita lifecycle.
+            // Exclude bolita draws so the old off-chain closer doesn't mark
+            // them 'closed' in DB before bolitaDrawScheduler calls contract.closeDraw().
+            if (process.env.BOLITA_CONTRACT_ADDRESS) {
+                draws = draws.filter(d => d.draw_type !== 'bolita');
+            }
 
             for (const draw of draws) {
                 await this.closeDraw(draw);

@@ -38,6 +38,8 @@ class DrawScheduler {
      * Always ensures the next 3 upcoming draws exist and are open for betting.
      */
     async createBolitaDraws(now, hoursAhead) {
+        // On-chain mode: bolitaDrawScheduler handles draw creation/lifecycle
+        if (process.env.BOLITA_CONTRACT_ADDRESS) return;
         const drawTimes = SCHEDULER_CONFIG.BOLITA_DRAW_TIMES;
         const closeBefore = SCHEDULER_CONFIG.CLOSE_BEFORE_DRAW_MINUTES;
 

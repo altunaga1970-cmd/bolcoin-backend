@@ -96,6 +96,16 @@ async function startServer() {
             console.log('Scheduler deshabilitado (ENABLE_SCHEDULER=false)');
         }
 
+        // La Bolita on-chain scheduler — creates/closes draws on the contract
+        if (process.env.BOLITA_CONTRACT_ADDRESS) {
+            try {
+                const bolitaDrawScheduler = require('./services/bolitaDrawScheduler');
+                await bolitaDrawScheduler.start();
+            } catch (error) {
+                console.error('[DEGRADED] Error iniciando BolitaDrawScheduler (no fatal):', error.message);
+            }
+        }
+
         // La Bolita on-chain event indexer — persists BetResolved/DrawResolved to DB
         if (process.env.BOLITA_CONTRACT_ADDRESS) {
             try {
@@ -134,6 +144,7 @@ async function startServer() {
         }
         vrfService.stopEventListener();
         if (process.env.BOLITA_CONTRACT_ADDRESS) {
+            try { require('./services/bolitaDrawScheduler').stop(); } catch (_) {}
             try { require('./services/bolitaIndexer').bolitaIndexer.stop(); } catch (_) {}
         }
         if (process.env.KENO_CONTRACT_ADDRESS) {
