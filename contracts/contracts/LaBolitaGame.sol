@@ -461,6 +461,7 @@ contract LaBolitaGame is VRFConsumerBaseV2Plus, ReentrancyGuard, Pausable {
                     );
                     if (success) {
                         d.totalPaidOut += payout;
+                        b.payout = 0; // Mark as paid — retryUnpaidBet requires payout > 0
                     }
                 }
 
