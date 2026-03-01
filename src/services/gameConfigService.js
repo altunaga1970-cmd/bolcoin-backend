@@ -147,8 +147,11 @@ async function getConfigValue(key, defaultValue = null) {
 }
 
 /**
- * Obtener balance actual del pool de Keno
- * Fuentes: tabla keno_pool o balance del contrato
+ * Obtener balance actual del pool de Keno.
+ * - On-chain mode (KENO_CONTRACT_ADDRESS set): lee availablePool() del contrato.
+ *   El contrato es la fuente de verdad — la tabla keno_pool puede estar desincronizada.
+ * - Off-chain mode: lee de la tabla keno_pool en DB.
+ * Cache de 10 segundos en ambos casos.
  */
 async function getPoolBalance() {
   // Verificar cache
@@ -156,8 +159,25 @@ async function getPoolBalance() {
     return poolBalanceCache;
   }
 
+  // On-chain: leer del contrato (fuente de verdad real)
+  if (process.env.KENO_CONTRACT_ADDRESS) {
+    try {
+      const { getKenoContractReadOnly } = require('../chain/kenoProvider');
+      const { ethers } = require('ethers');
+      const kenoContract = getKenoContractReadOnly();
+      const rawPool = await kenoContract.availablePool();
+      const balance = parseFloat(ethers.formatUnits(rawPool, 6));
+      poolBalanceCache = balance;
+      poolBalanceCacheTimestamp = Date.now();
+      return balance;
+    } catch (err) {
+      console.warn('[GameConfig] Could not read on-chain pool balance, falling back to DB:', err.message);
+      // Fall through to DB read
+    }
+  }
+
   try {
-    // Intentar obtener de tabla keno_pool
+    // Off-chain: leer de tabla keno_pool
     const result = await pool.query(
       `SELECT balance FROM keno_pool WHERE id = 1`
     );
@@ -183,7 +203,6 @@ async function getPoolBalance() {
 
   } catch (err) {
     console.error('[GameConfig] Error getting pool balance:', err);
-    // Fallback a minimo
     return MVP_DEFAULTS.keno_min_pool_balance;
   }
 }
