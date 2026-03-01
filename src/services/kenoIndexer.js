@@ -19,6 +19,7 @@
 
 const { ethers } = require('ethers');
 const { query } = require('../config/database');
+const { loadIndexerBlock, saveIndexerBlock } = require('../db/indexerState');
 
 // Minimal ABI — only events + bets() public mapping needed for indexing
 const ABI = [
@@ -86,7 +87,15 @@ class KenoIndexer {
     this.isRunning = true;
 
     try {
-      this.lastBlockProcessed = await this.provider.getBlockNumber();
+      const saved = await loadIndexerBlock('keno');
+      if (saved !== null) {
+        this.lastBlockProcessed = saved;
+        console.log(`[KenoIndexer] Resuming from block ${saved} (DB state)`);
+      } else {
+        const currentBlock = await this.provider.getBlockNumber();
+        this.lastBlockProcessed = Math.max(0, currentBlock - 200);
+        console.log(`[KenoIndexer] No DB state — starting from block ${this.lastBlockProcessed}`);
+      }
     } catch (_) {
       this.lastBlockProcessed = 0;
     }
@@ -127,6 +136,7 @@ class KenoIndexer {
           } catch (_) { /* skip non-matching logs */ }
         }
         this.lastBlockProcessed = currentBlock;
+        await saveIndexerBlock('keno', currentBlock);
       }
     } catch (err) {
       console.error('[KenoIndexer] Poll error:', err.message);

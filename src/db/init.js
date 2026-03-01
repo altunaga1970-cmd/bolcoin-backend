@@ -121,6 +121,15 @@ async function runBaseSchema() {
       )
     `);
 
+    // Indexer state table — persists lastBlockProcessed across restarts
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS indexer_state (
+        name VARCHAR(64) PRIMARY KEY,
+        last_block BIGINT NOT NULL DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     // Transactions table
     await client.query(`
       CREATE TABLE IF NOT EXISTS transactions (

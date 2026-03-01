@@ -17,6 +17,7 @@
 
 const { ethers } = require('ethers');
 const { getClient, query } = require('../config/database');
+const { loadIndexerBlock, saveIndexerBlock } = require('../db/indexerState');
 
 const ABI = [
   'event DrawCreated(uint256 indexed drawId, string drawNumber, uint256 scheduledTime)',
@@ -79,9 +80,18 @@ class BolitaIndexer {
 
     console.log('[BolitaIndexer] Starting event polling (getLogs)...');
 
-    // Seed lastBlockProcessed from current chain tip — only index new events from here
+    // Load last processed block from DB so we don't miss events during redeploys.
+    // Fall back to (currentBlock - 200) to catch recent events on first run.
     try {
-      this.lastBlockProcessed = await this.provider.getBlockNumber();
+      const saved = await loadIndexerBlock('bolita');
+      if (saved !== null) {
+        this.lastBlockProcessed = saved;
+        console.log(`[BolitaIndexer] Resuming from block ${saved} (DB state)`);
+      } else {
+        const currentBlock = await this.provider.getBlockNumber();
+        this.lastBlockProcessed = Math.max(0, currentBlock - 200);
+        console.log(`[BolitaIndexer] No DB state — starting from block ${this.lastBlockProcessed}`);
+      }
     } catch (_) {
       this.lastBlockProcessed = 0;
     }
@@ -122,6 +132,7 @@ class BolitaIndexer {
           } catch (_) { /* skip non-matching logs */ }
         }
         this.lastBlockProcessed = currentBlock;
+        await saveIndexerBlock('bolita', currentBlock);
       }
     } catch (err) {
       console.error('[BolitaIndexer] Poll error:', err.message);

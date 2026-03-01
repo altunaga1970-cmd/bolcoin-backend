@@ -13,6 +13,7 @@
 const { ethers } = require('ethers');
 const pool = require('../db');
 const BingoGameABI = require('../chain/abi/BingoGame.abi.json');
+const { loadIndexerBlock, saveIndexerBlock } = require('../db/indexerState');
 
 const TOKEN_DECIMALS = 6;
 
@@ -57,9 +58,17 @@ class BingoEventService {
 
     console.log('[BingoEvents] Starting event listeners (getLogs polling)...');
 
-    // Seed lastBlockProcessed from current chain tip
+    // Load last processed block from DB — resumes after Railway redeploys
     try {
-      this.lastBlockProcessed = await this.provider.getBlockNumber();
+      const saved = await loadIndexerBlock('bingo');
+      if (saved !== null) {
+        this.lastBlockProcessed = saved;
+        console.log(`[BingoEventService] Resuming from block ${saved} (DB state)`);
+      } else {
+        const currentBlock = await this.provider.getBlockNumber();
+        this.lastBlockProcessed = Math.max(0, currentBlock - 200);
+        console.log(`[BingoEventService] No DB state — starting from block ${this.lastBlockProcessed}`);
+      }
     } catch (_) {
       this.lastBlockProcessed = 0;
     }
@@ -97,6 +106,7 @@ class BingoEventService {
           } catch (_) { /* skip non-matching logs */ }
         }
         this.lastBlockProcessed = currentBlock;
+        await saveIndexerBlock('bingo', currentBlock);
       }
 
       // Retry any rounds stuck in vrf_fulfilled (e.g. prior resolveRound tx failed)
