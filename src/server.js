@@ -152,6 +152,14 @@ async function startServer() {
         console.log('[DEGRADED] VRF y Scheduler omitidos (DB no disponible)');
     }
 
+    // Monitoring + Telegram alerts (non-fatal, runs regardless of DB status)
+    try {
+        const monitoringService = require('./services/monitoringService');
+        await monitoringService.start();
+    } catch (error) {
+        console.error('[DEGRADED] Error iniciando MonitoringService (no fatal):', error.message);
+    }
+
     console.log(`Scheduler: ${ENABLE_SCHEDULER && dbConnected ? 'ACTIVO' : 'DESACTIVADO'}`);
     console.log(`VRF: ${vrfInitialized ? 'PRODUCCION' : 'SIMULACION'}`);
     console.log(`DB: ${dbConnected ? 'CONECTADA' : 'DEGRADED MODE'}`);
@@ -173,6 +181,7 @@ async function startServer() {
         if (process.env.KENO_CONTRACT_ADDRESS) {
             try { require('./services/kenoIndexer').kenoIndexer.stop(); } catch (_) {}
         }
+        try { require('./services/monitoringService').stop(); } catch (_) {}
         if (process.env.BINGO_CONTRACT_ADDRESS) {
             try { require('./services/bingoEventService').bingoEventService.stop(); } catch (_) {}
             try { require('./services/bingoSchedulerOnChain').stop(); } catch (_) {}
