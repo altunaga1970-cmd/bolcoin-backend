@@ -18,7 +18,7 @@
 
 const { ethers } = require("hardhat");
 
-const BOLITA_ADDRESS = "0x6b07df51947f3e476b7574c14ff3293a8a4c846a";
+const BOLITA_ADDRESS = "0x1F4c288f6e5dE5731783bBaF83555CC926dDB383"; // v2 (double-pay fix)
 const USDT_ADDRESS   = "0x78B85ACB36263D7A77671941E2B20940afAef359";
 const FUND_AMOUNT    = ethers.parseUnits(process.env.FUND_AMOUNT || "1000", 6); // 1000 tUSDT default
 

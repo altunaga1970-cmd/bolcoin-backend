@@ -26,7 +26,7 @@ if (!NEW_OPERATOR || !ethers.isAddress(NEW_OPERATOR)) {
 const CONTRACTS = [
   { name: "KenoGame",    address: "0xAa1d6945e691807CBCC239F6C89C6469E0eD4998" },
   { name: "BingoGame",   address: "0x4B1f1e94a9651E84D8584760980f74C56Ee61652" },
-  { name: "LaBolitaGame",address: "0x6B07df51947f3e476B7574C14fF3293a8a4c846A" },
+  { name: "LaBolitaGame",address: "0x1F4c288f6e5dE5731783bBaF83555CC926dDB383" }, // v2 (double-pay fix)
 ];
 
 const OPERATOR_ABI = [
