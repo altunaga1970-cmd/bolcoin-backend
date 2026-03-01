@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const pool = require('../db');
 const gameConfigService = require('./gameConfigService');
 const { drawBallsFromVrfSeed, detectWinners, checkCard, ZERO_ADDRESS } = require('./bingoResolverService');
+const { calculateBetCommissionByWallet } = require('./referralAdminService');
 
 const TOKEN_DECIMALS = 6;
 
@@ -460,6 +461,9 @@ async function buyCardsOffChain(walletAddress, roundId, count = 1) {
          VALUES ($1, $2, $3, $4, $5, NOW())`,
         [cardId, roundId, addr, cardIndex, JSON.stringify(numbers)]
       );
+
+      // Comision de referido (fire-and-forget, no bloquea la compra)
+      calculateBetCommissionByWallet(cardId, addr, cardPrice).catch(() => {});
 
       cards.push({ cardId, roundId, ownerAddress: addr, cardIndex, numbers });
     }

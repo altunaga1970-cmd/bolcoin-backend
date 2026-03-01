@@ -15,6 +15,7 @@ const {
 } = require('../config/constants');
 const bankrollService = require('./bankrollService');
 const { toCents, fromCents } = require('../utils/money');
+const { calculateBetCommission } = require('./referralAdminService');
 
 // Configuración de ethers para contratos
 const ethers = require('ethers');
@@ -253,6 +254,9 @@ async function placeBets(userId, drawId, bets) {
             }
 
             createdBets.push(betResult.rows[0]);
+
+            // Comision de referido (fire-and-forget, no bloquea la apuesta)
+            calculateBetCommission(betResult.rows[0].id, userId, amount).catch(() => {});
         }
 
         // NOTE: In non-custodial mode, bets go directly to the smart contract

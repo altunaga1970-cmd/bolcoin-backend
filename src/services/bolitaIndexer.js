@@ -18,6 +18,7 @@
 const { ethers } = require('ethers');
 const { getClient, query } = require('../config/database');
 const { loadIndexerBlock, saveIndexerBlock } = require('../db/indexerState');
+const { calculateBetCommission } = require('./referralAdminService');
 
 const ABI = [
   'event DrawCreated(uint256 indexed drawId, string drawNumber, uint256 scheduledTime)',
@@ -252,13 +253,19 @@ class BolitaIndexer {
     const multiplier = multipliers[gameType] || 65;
     const potentialPayout = Math.round(amountUsdt * multiplier * 100) / 100;
 
-    await query(`
+    const insertResult = await query(`
       INSERT INTO bets (
         user_id, draw_id, game_type, bet_number, amount,
         potential_payout, multiplier, status, chain_bet_index, created_at
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, NOW())
       ON CONFLICT DO NOTHING
+      RETURNING id
     `, [userId, drawIdNum, gameType, numStr, amountUsdt, potentialPayout, multiplier, betIdNum]);
+
+    if (insertResult.rows[0]?.id) {
+      // Comision de referido (fire-and-forget, no bloquea el indexer)
+      calculateBetCommission(insertResult.rows[0].id, userId, amountUsdt).catch(() => {});
+    }
 
     console.log(`[BolitaIndexer] BetPlaced: betId=${betIdNum} draw=${drawIdNum} user=${userAddr} ${gameType}:${numStr} ${amountUsdt} USDT`);
   }

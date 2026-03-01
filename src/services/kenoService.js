@@ -26,6 +26,7 @@ const kenoSessionService = require('./kenoSessionService');
 const gameConfigService = require('./gameConfigService');
 const kenoVrfService = require('./kenoVrfService');
 const { toCents, fromCents } = require('../utils/money');
+const { calculateBetCommissionByWallet } = require('./referralAdminService');
 
 // Configuracion estatica de Keno (valores dinamicos vienen de gameConfigService)
 const KENO_CONFIG = {
@@ -345,6 +346,9 @@ async function playKeno(walletAddress, selectedNumbers, betAmount, commitId = nu
         seedHash, usedCommitId
       ]
     );
+
+    // Comision de referido (fire-and-forget, no bloquea el juego)
+    calculateBetCommissionByWallet(gameId, wallet, bet).catch(() => {});
 
     // Actualizar sesion con los totales
     await client.query(

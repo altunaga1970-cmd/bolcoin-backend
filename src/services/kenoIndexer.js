@@ -20,6 +20,7 @@
 const { ethers } = require('ethers');
 const { query } = require('../config/database');
 const { loadIndexerBlock, saveIndexerBlock } = require('../db/indexerState');
+const { calculateBetCommissionByWallet } = require('./referralAdminService');
 
 // Minimal ABI — only events + bets() public mapping needed for indexing
 const ABI = [
@@ -227,6 +228,9 @@ class KenoIndexer {
         betAmountUsdt, multiplier, payoutUsdt, netResult,
         seed,
       ]);
+
+      // Comision de referido (fire-and-forget, no bloquea el indexer)
+      calculateBetCommissionByWallet(gameId, userAddress, betAmountUsdt).catch(() => {});
 
       console.log(
         `[KenoIndexer] Indexed betId=${betId} user=${userAddress} ` +

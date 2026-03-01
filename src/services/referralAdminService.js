@@ -431,6 +431,57 @@ async function calculateBetCommission(betId, userId, betAmount) {
 }
 
 /**
+ * Calcular y registrar comision por apuesta (variante por wallet, para Keno y Bingo)
+ */
+async function calculateBetCommissionByWallet(betId, walletAddress, betAmount) {
+    const userWallet = walletAddress.toLowerCase();
+    const client = await getClient();
+
+    try {
+        const referralResult = await client.query(`
+            SELECT id, referrer_wallet
+            FROM referrals
+            WHERE referred_wallet = $1 AND status = 'active'
+        `, [userWallet]);
+
+        if (referralResult.rows.length === 0) {
+            return null;
+        }
+
+        const referral = referralResult.rows[0];
+        const commissionAmount = betAmount * COMMISSION_RATE;
+
+        await client.query('BEGIN');
+
+        const commissionResult = await client.query(`
+            INSERT INTO referral_commissions
+            (referral_id, referrer_wallet, referred_wallet, bet_id, bet_amount, commission_rate, commission_amount)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING *
+        `, [referral.id, referral.referrer_wallet, userWallet, String(betId), betAmount, COMMISSION_RATE, commissionAmount]);
+
+        await client.query(`
+            UPDATE referrals
+            SET
+                total_bets_amount = total_bets_amount + $1,
+                total_commissions_generated = total_commissions_generated + $2,
+                updated_at = NOW()
+            WHERE id = $3
+        `, [betAmount, commissionAmount, referral.id]);
+
+        await client.query('COMMIT');
+
+        return commissionResult.rows[0];
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Error calculando comision de referido (wallet):', error);
+        return null;
+    } finally {
+        client.release();
+    }
+}
+
+/**
  * Cambiar estado de un referido
  */
 async function updateReferralStatus(referralId, newStatus) {
@@ -463,6 +514,7 @@ module.exports = {
     createReferralCode,
     registerReferral,
     calculateBetCommission,
+    calculateBetCommissionByWallet,
     updateReferralStatus,
     COMMISSION_RATE
 };
